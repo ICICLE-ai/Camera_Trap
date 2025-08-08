@@ -1,0 +1,34 @@
+# Baseline experiment configuration
+experiment_name: "baseline"
+
+# Model settings
+model: "bioclip"
+use_peft: false
+
+# Training settings
+epochs: 30
+learning_rate: 0.0001
+weight_decay: 0.0001
+batch_size: 128
+eval_batch_size: 512
+optimizer: "AdamW"
+scheduler: "CosineAnnealingLR"
+scheduler_params:
+  T_max: 30
+  eta_min: 0.00001
+
+# Loss settings
+loss_type: "ce"
+
+# Module settings
+ood_method: "all"
+al_method: "all"
+cl_method: "naive-ft"
+calibration: false
+
+# Pretraining
+pretrain: false
+
+# System settings
+device: "cuda"
+seed: 42
