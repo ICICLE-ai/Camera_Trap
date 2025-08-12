@@ -37,9 +37,17 @@ class MetricsCalculator:
         metrics['accuracy'] = accuracy_score(labels, predictions)
         metrics['balanced_accuracy'] = balanced_accuracy_score(labels, predictions)
         
-        # Per-class metrics
+        # Per-class metrics with zero_division handling
         precision, recall, f1, support = precision_recall_fscore_support(
             labels, predictions, average=None, zero_division=0
+        )
+        
+        # Also get macro and weighted averages with zero_division handling
+        precision_macro, recall_macro, f1_macro, _ = precision_recall_fscore_support(
+            labels, predictions, average='macro', zero_division=0
+        )
+        precision_weighted, recall_weighted, f1_weighted, _ = precision_recall_fscore_support(
+            labels, predictions, average='weighted', zero_division=0
         )
         
         metrics['per_class'] = {}
@@ -52,16 +60,15 @@ class MetricsCalculator:
                     'support': int(support[i])
                 }
         
-        # Macro and weighted averages
-        metrics['macro_precision'] = float(np.mean(precision))
-        metrics['macro_recall'] = float(np.mean(recall))
-        metrics['macro_f1'] = float(np.mean(f1))
+        # Macro and weighted averages (using computed values)
+        metrics['macro_precision'] = float(precision_macro)
+        metrics['macro_recall'] = float(recall_macro)
+        metrics['macro_f1'] = float(f1_macro)
         
-        # Weighted averages
-        if len(support) > 0:
-            metrics['weighted_precision'] = float(np.average(precision, weights=support))
-            metrics['weighted_recall'] = float(np.average(recall, weights=support))
-            metrics['weighted_f1'] = float(np.average(f1, weights=support))
+        # Weighted averages (using computed values)
+        metrics['weighted_precision'] = float(precision_weighted)
+        metrics['weighted_recall'] = float(recall_weighted)
+        metrics['weighted_f1'] = float(f1_weighted)
         
         # Confusion matrix
         cm = confusion_matrix(labels, predictions, labels=list(range(self.n_classes)))

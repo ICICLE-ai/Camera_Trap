@@ -1,0 +1,54 @@
+# Dataset configuration for camera trap detection
+
+# Model configuration
+model:
+  name: "bioclip"  # Use BioCLIP by default
+  num_classes: null    # Auto-detected from data
+  pretrained: true
+
+# Training configuration
+training:
+  epochs: 30
+  batch_size: 128
+  learning_rate: 0.0001
+  optimizer: "adam"
+  scheduler: null
+
+data:
+  dataset: "APN_K024"
+  data_dir: "data/APN/APN_K024"
+  train_path: "data/APN/APN_K024/30/train.json"
+  test_path: "data/APN/APN_K024/30/test.json"
+  val_path: null  # Will split from train if not provided
+  image_dir: "data/APN/APN_K024/images"
+  
+  # Data preprocessing
+  image_size: 224
+  normalize:
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+  
+  # Data augmentation
+  augmentation:
+    train:
+      random_resized_crop: true
+      horizontal_flip: true
+      color_jitter: 0.1
+      rotation: 10
+    val:
+      resize: 256
+      center_crop: 224
+  
+  # Data loading
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  
+  # Sampling and splitting
+  train_split: 0.8
+  val_split: 0.2
+  stratified: true
+  
+  # Class information (will be auto-detected from JSON)
+  num_classes: null  # Auto-detected
+  class_names: null  # Auto-detected

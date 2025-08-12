@@ -1,0 +1,43 @@
+# Zero-Shot Configuration
+# Based on ICICLE-Benchmark zs.yaml - no training, pure zero-shot BioCLIP evaluation
+experiment:
+  name: "bioclip_zero_shot"
+  description: "Zero-shot evaluation using BioCLIP without any fine-tuning"
+  output_dir: "logs/zs"
+
+model:
+  name: "bioclip"
+  pretrained: true
+  freeze_backbone: true  # No training, just zero-shot inference
+  use_peft: false
+
+training:
+  epochs: 0  # No training epochs for zero-shot
+  learning_rate: 0.0001  # Not used but kept for consistency
+  batch_size: 128
+  eval_batch_size: 512
+  weight_decay: 0.0001
+  optimizer: "AdamW"
+  scheduler: "CosineAnnealingLR"
+  scheduler_params:
+    T_max: 30
+    eta_min: 0.00001
+  loss_type: "ce"
+  chop_head: false
+
+modules:
+  ood:
+    method: "none"
+    enabled: false
+  active_learning:
+    method: "none"
+    enabled: false
+  continual_learning:
+    method: "none"
+    enabled: false
+  calibration:
+    enabled: false
+
+# Zero-shot specific settings
+pretrain:
+  enabled: false  # No pretraining needed for zero-shot

@@ -48,12 +48,18 @@ class Pipeline:
         
     def run(self) -> Dict[str, Any]:
         """
-        Run the complete pipeline.
+        Run the complete pipeline with proper mode handling.
+        
+        Modes:
+        - zs (zero-shot): Use pretrained model, no training, test on each checkpoint
+        - oracle: Train on ALL checkpoints at start, then test on each checkpoint  
+        - accum (accumulative): Continual learning - start with ckp_0, accumulate training data
         
         Returns:
             Dictionary containing all results and metrics
         """
         logger.info("Starting ICICLE-Benchmark V2 Pipeline")
+        logger.info(f"Mode: {self.config.mode}")
         start_time = time.time()
         
         try:
@@ -63,28 +69,25 @@ class Pipeline:
             # Load datasets
             train_datasets, eval_datasets = self._load_datasets()
             
-            # Get checkpoint list
-            checkpoint_list = self.dataset_manager.get_checkpoint_list()
-            logger.info(f"Processing {len(checkpoint_list)} checkpoints: {checkpoint_list}")
+            # Get checkpoint list and convert to 0-based indexing
+            raw_checkpoint_list = self.dataset_manager.get_checkpoint_list()
+            checkpoint_list = self._convert_to_zero_indexed(raw_checkpoint_list)
+            logger.info(f"Processing {len(checkpoint_list)} checkpoints (0-indexed): {list(range(len(checkpoint_list)))}")
+            logger.info(f"Raw checkpoint mapping: {dict(enumerate(raw_checkpoint_list))}")
             
             # Run pretraining if enabled
             if self.config.pretrain:
                 model = self._run_pretraining(model)
             
-            # Main checkpoint loop
-            for i, checkpoint in enumerate(checkpoint_list):
-                logger.info(f"Processing checkpoint {i+1}/{len(checkpoint_list)}: {checkpoint}")
-                
-                with self.gpu_manager.context_cleanup():
-                    checkpoint_results = self._process_checkpoint(
-                        model, train_datasets, eval_datasets, checkpoint, i
-                    )
-                    self.results[checkpoint] = checkpoint_results
-                
-                # Save intermediate results
-                self._save_intermediate_results(checkpoint)
-                
-                logger.info(f"Completed checkpoint {checkpoint}")
+            # Mode-specific execution
+            if self.config.mode == "zs":
+                self.results = self._run_zero_shot_mode(model, eval_datasets, checkpoint_list, raw_checkpoint_list)
+            elif self.config.mode == "oracle":
+                self.results = self._run_oracle_mode(model, train_datasets, eval_datasets, checkpoint_list, raw_checkpoint_list)
+            elif self.config.mode == "accum":
+                self.results = self._run_accumulative_mode(model, train_datasets, eval_datasets, checkpoint_list, raw_checkpoint_list)
+            else:
+                raise ValueError(f"Unknown mode: {self.config.mode}")
             
             # Final processing
             final_results = self._finalize_results()
@@ -97,6 +100,219 @@ class Pipeline:
         except Exception as e:
             logger.error(f"Pipeline failed: {str(e)}")
             raise
+    
+    def _convert_to_zero_indexed(self, raw_checkpoint_list: List[str]) -> List[str]:
+        """Convert raw checkpoint list to 0-indexed mapping."""
+        # Sort the checkpoints numerically (ckp_1, ckp_2, ..., ckp_17)
+        def extract_number(ckp_str):
+            return int(ckp_str.split('_')[1])
+        
+        sorted_checkpoints = sorted(raw_checkpoint_list, key=extract_number)
+        return sorted_checkpoints
+    
+    def _run_zero_shot_mode(self, model, eval_datasets, checkpoint_list, raw_checkpoint_list) -> Dict[str, Any]:
+        """
+        Zero-shot mode: Use pretrained model only, no training.
+        Test on each checkpoint sequentially.
+        """
+        logger.info("="*60)
+        logger.info("RUNNING ZERO-SHOT MODE")
+        logger.info("Training: NONE (pretrained model only)")
+        logger.info(f"Testing: Each checkpoint 0-{len(checkpoint_list)-1}")
+        logger.info("="*60)
+        
+        results = {}
+        
+        for ckp_idx, raw_ckp in enumerate(checkpoint_list):
+            test_ckp_idx = ckp_idx
+            
+            logger.info(f"\n--- CHECKPOINT {ckp_idx} (Zero-Shot) ---")
+            logger.info(f"Training on: NONE (pretrained only)")
+            logger.info(f"Testing on: ckp_{test_ckp_idx} (raw: {raw_ckp})")
+            
+            with self.gpu_manager.context_cleanup():
+                # No training, just evaluation
+                eval_data = eval_datasets[raw_ckp]
+                eval_results = self._evaluate_model(model, eval_data)
+                
+                checkpoint_results = {
+                    'mode': 'zero_shot',
+                    'train_checkpoints': [],
+                    'test_checkpoint': test_ckp_idx, 
+                    'raw_test_checkpoint': raw_ckp,
+                    'evaluation': eval_results,
+                    'train_samples': 0,
+                    'eval_samples': len(eval_data) if eval_data else 0,
+                }
+                
+                results[f'ckp_{ckp_idx}'] = checkpoint_results
+                
+            logger.info(f"Completed checkpoint {ckp_idx} (zero-shot)")
+            
+        return results
+    
+    def _run_oracle_mode(self, model, train_datasets, eval_datasets, checkpoint_list, raw_checkpoint_list) -> Dict[str, Any]:
+        """
+        Oracle mode: Train on ALL data at beginning, then test on each checkpoint.
+        """
+        logger.info("="*60)
+        logger.info("RUNNING ORACLE MODE")
+        logger.info(f"Training: ALL checkpoints 0-{len(checkpoint_list)-1} at start")
+        logger.info(f"Testing: Each checkpoint 0-{len(checkpoint_list)-1}")
+        logger.info("="*60)
+        
+        # Step 1: Train on ALL data
+        logger.info(f"\n--- ORACLE TRAINING PHASE ---")
+        logger.info(f"Training on: ALL checkpoints 0-{len(checkpoint_list)-1}")
+        logger.info(f"Raw checkpoints: {checkpoint_list}")
+        
+        # Combine all training data
+        all_train_data = self._combine_datasets([train_datasets[raw_ckp] for raw_ckp in checkpoint_list])
+        logger.info(f"Total training samples: {len(all_train_data) if all_train_data else 0}")
+        
+        # Train model on all data
+        model = self._train_model_on_data(model, all_train_data, training_phase="oracle_all")
+        
+        # Step 2: Test on each checkpoint
+        results = {}
+        
+        for ckp_idx, raw_ckp in enumerate(checkpoint_list):
+            test_ckp_idx = ckp_idx
+            
+            logger.info(f"\n--- CHECKPOINT {ckp_idx} (Oracle Test) ---")
+            logger.info(f"Training on: ALL 0-{len(checkpoint_list)-1} (already done)")
+            logger.info(f"Testing on: ckp_{test_ckp_idx} (raw: {raw_ckp})")
+            
+            with self.gpu_manager.context_cleanup():
+                eval_data = eval_datasets[raw_ckp]
+                eval_results = self._evaluate_model(model, eval_data)
+                
+                checkpoint_results = {
+                    'mode': 'oracle',
+                    'train_checkpoints': list(range(len(checkpoint_list))),
+                    'test_checkpoint': test_ckp_idx,
+                    'raw_test_checkpoint': raw_ckp,
+                    'evaluation': eval_results,
+                    'train_samples': len(all_train_data) if all_train_data else 0,
+                    'eval_samples': len(eval_data) if eval_data else 0,
+                }
+                
+                results[f'ckp_{ckp_idx}'] = checkpoint_results
+                
+            logger.info(f"Completed checkpoint {ckp_idx} (oracle)")
+            
+        return results
+    
+    def _run_accumulative_mode(self, model, train_datasets, eval_datasets, checkpoint_list, raw_checkpoint_list) -> Dict[str, Any]:
+        """
+        Accumulative (Continual Learning) mode:
+        - Start: Test on ckp_0 (same as zero-shot)
+        - ckp_1: Train on ckp_0, test on ckp_1  
+        - ckp_2: Train on ckp_0+1, test on ckp_2
+        - ...
+        """
+        logger.info("="*60)
+        logger.info("RUNNING ACCUMULATIVE MODE (Continual Learning)")
+        logger.info("Checkpoint 0: Test only (same as zero-shot)")
+        logger.info("Checkpoint N: Train on 0..N-1, test on N")
+        logger.info("="*60)
+        
+        results = {}
+        accumulated_train_data = []
+        
+        for ckp_idx, raw_ckp in enumerate(checkpoint_list):
+            test_ckp_idx = ckp_idx
+            
+            if ckp_idx == 0:
+                # First checkpoint: zero-shot (no training data available yet)
+                logger.info(f"\n--- CHECKPOINT {ckp_idx} (Accumulative - Zero Shot) ---")
+                logger.info(f"Training on: NONE (no prior data available)")
+                logger.info(f"Testing on: ckp_{test_ckp_idx} (raw: {raw_ckp})")
+                
+                with self.gpu_manager.context_cleanup():
+                    eval_data = eval_datasets[raw_ckp]
+                    eval_results = self._evaluate_model(model, eval_data)
+                    
+                    checkpoint_results = {
+                        'mode': 'accumulative',
+                        'train_checkpoints': [],
+                        'test_checkpoint': test_ckp_idx,
+                        'raw_test_checkpoint': raw_ckp,
+                        'evaluation': eval_results,
+                        'train_samples': 0,
+                        'eval_samples': len(eval_data) if eval_data else 0,
+                    }
+                    
+                    results[f'ckp_{ckp_idx}'] = checkpoint_results
+                
+                # Add this checkpoint's data to accumulated training data for next iteration
+                current_train_data = train_datasets[raw_ckp]
+                if current_train_data:
+                    accumulated_train_data.append(current_train_data)
+                    
+            else:
+                # Subsequent checkpoints: train on accumulated data, test on current
+                train_ckp_range = list(range(ckp_idx))  # 0 to ckp_idx-1
+                
+                logger.info(f"\n--- CHECKPOINT {ckp_idx} (Accumulative - Train & Test) ---")
+                logger.info(f"Training on: ckp_{train_ckp_range} (accumulated: 0-{ckp_idx-1})")
+                logger.info(f"Testing on: ckp_{test_ckp_idx} (raw: {raw_ckp})")
+                logger.info(f"Accumulated datasets: {len(accumulated_train_data)}")
+                
+                with self.gpu_manager.context_cleanup():
+                    # Train on accumulated data
+                    combined_train_data = self._combine_datasets(accumulated_train_data)
+                    logger.info(f"Total training samples: {len(combined_train_data) if combined_train_data else 0}")
+                    
+                    model = self._train_model_on_data(
+                        model, combined_train_data, 
+                        training_phase=f"accum_ckp_{ckp_idx}_train_0_to_{ckp_idx-1}"
+                    )
+                    
+                    # Test on current checkpoint
+                    eval_data = eval_datasets[raw_ckp]
+                    eval_results = self._evaluate_model(model, eval_data)
+                    
+                    checkpoint_results = {
+                        'mode': 'accumulative',
+                        'train_checkpoints': train_ckp_range,
+                        'test_checkpoint': test_ckp_idx,
+                        'raw_test_checkpoint': raw_ckp,
+                        'evaluation': eval_results,
+                        'train_samples': len(combined_train_data) if combined_train_data else 0,
+                        'eval_samples': len(eval_data) if eval_data else 0,
+                    }
+                    
+                    results[f'ckp_{ckp_idx}'] = checkpoint_results
+                
+                # Add current checkpoint's training data for next iteration
+                current_train_data = train_datasets[raw_ckp]
+                if current_train_data:
+                    accumulated_train_data.append(current_train_data)
+            
+            logger.info(f"Completed checkpoint {ckp_idx} (accumulative)")
+        
+        return results
+    
+    def _combine_datasets(self, dataset_list):
+        """Combine multiple datasets into one."""
+        if not dataset_list:
+            return None
+        # Placeholder - implement based on your dataset structure
+        logger.info(f"Combining {len(dataset_list)} datasets")
+        return dataset_list[0]  # Placeholder
+    
+    def _train_model_on_data(self, model, train_data, training_phase: str):
+        """Train model on given data."""
+        logger.info(f"Training model: {training_phase}")
+        if train_data is None:
+            logger.warning("No training data provided")
+            return model
+        
+        # Placeholder - implement actual training
+        logger.info(f"Training samples: {len(train_data) if hasattr(train_data, '__len__') else 'unknown'}")
+        # Actual training logic will go here
+        return model
     
     def _initialize_model(self):
         """Initialize the model."""

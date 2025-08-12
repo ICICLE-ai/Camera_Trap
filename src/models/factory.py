@@ -2,6 +2,7 @@
 Model factory for ICICLE-Benchmark V2
 """
 
+import os
 import logging
 from typing import Any
 import torch
@@ -143,3 +144,93 @@ class PlaceholderModel(nn.Module):
         if return_feats:
             return logits, intermediate_features
         return logits
+
+
+def create_model(config_dict):
+    """
+    Create a model based on configuration dictionary.
+    
+    Args:
+        config_dict: Configuration dictionary containing model settings
+        
+    Returns:
+        PyTorch model
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    model_config = config_dict['model']
+    model_name = model_config['name'].lower()
+    num_classes = model_config.get('num_classes', 11)  # Auto-detected or default
+    
+    logger.info(f"Creating model: {model_name}")
+    
+    if model_name == 'bioclip':
+        # Use BioCLIP model with pre-trained weights
+        from .bioclip_model import create_bioclip_model
+        
+        # Generate class names (in real scenario, these come from data)
+        class_names = [f"class_{i}" for i in range(num_classes)]
+        
+        # Try to get actual class names from data config if available
+        data_config = config_dict.get('data', {})
+        if 'class_names' in data_config and data_config['class_names']:
+            class_names = data_config['class_names']
+        
+        # Look for pre-trained weights
+        pretrained_path = None
+        bioclip_weight_paths = [
+            'pretrained_weight/bioclip/open_clip_pytorch_model.bin',
+            'ICICLE-Benchmark/pretrained_weight/bioclip/open_clip_pytorch_model.bin'
+        ]
+        
+        for path in bioclip_weight_paths:
+            if os.path.exists(path):
+                pretrained_path = path
+                logger.info(f"Found BioCLIP weights at: {path}")
+                break
+        
+        if pretrained_path is None:
+            logger.warning("No local BioCLIP weights found in expected locations")
+            logger.info("Expected locations:")
+            for path in bioclip_weight_paths:
+                logger.info(f"  - {path}")
+            logger.info("Falling back to PlaceholderModel")
+            model = PlaceholderModel(num_classes)
+        else:
+            try:
+                model = create_bioclip_model(
+                    num_classes=num_classes,
+                    class_names=class_names,
+                    pretrained_path=pretrained_path,
+                    device='cuda' if torch.cuda.is_available() else 'cpu'
+                )
+                logger.info(f"Created BioCLIP model with {num_classes} classes")
+                
+            except Exception as e:
+                logger.error(f"Failed to create BioCLIP model: {e}")
+                logger.info("Falling back to PlaceholderModel")
+                model = PlaceholderModel(num_classes)
+            
+    elif model_name == 'resnet50':
+        # Use ResNet50 with ImageNet pre-training
+        try:
+            import torchvision.models as models
+            model = models.resnet50(weights='IMAGENET1K_V2')
+            model.fc = nn.Linear(model.fc.in_features, num_classes)
+            logger.info(f"Created ResNet50 with {num_classes} classes")
+            
+        except Exception as e:
+            logger.error(f"Failed to create ResNet50: {e}")
+            model = PlaceholderModel(num_classes)
+            
+    elif model_name == 'placeholder':
+        # Use placeholder model for testing
+        model = PlaceholderModel(num_classes)
+        logger.info(f"Created PlaceholderModel with {num_classes} classes")
+        
+    else:
+        logger.warning(f"Unknown model name '{model_name}', using PlaceholderModel")
+        model = PlaceholderModel(num_classes)
+    
+    return model

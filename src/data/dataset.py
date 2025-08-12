@@ -14,121 +14,296 @@ from ..core.config import Config
 
 logger = logging.getLogger(__name__)
 
+class CameraTrapDataset(Dataset):
+    """PyTorch Dataset for camera trap data."""
+    
+    def __init__(self, samples: List[Dict[str, Any]], class_names: List[str]):
+        """
+        Initialize camera trap dataset.
+        
+        Args:
+            samples: List of sample dictionaries with image_path, class_id, etc.
+            class_names: List of class names for mapping
+        """
+        self.samples = samples
+        self.class_names = class_names
+        
+    def __len__(self) -> int:
+        return len(self.samples)
+    
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
+        """
+        Get a sample from the dataset.
+        
+        Args:
+            idx: Sample index
+            
+        Returns:
+            Tuple of (image_tensor, label)
+        """
+        sample = self.samples[idx]
+        
+        # For now, return dummy tensors - in production this would load the actual image
+        image = torch.randn(3, 224, 224)  # Dummy image tensor
+        label = sample['class_id']
+        
+        return image, label
 
 class DatasetManager:
-    """Manages loading and handling of camera trap datasets."""
+    """Manages dataset loading and processing for ICICLE-Benchmark V2."""
     
     def __init__(self, config: Config):
+        """
+        Initialize dataset manager.
+        
+        Args:
+            config: Configuration object containing dataset settings and checkpoint info
+        """
         self.config = config
-        self.project_root = Path(__file__).parent.parent.parent.parent
+        self.logger = logging.getLogger(__name__)
         
-    def load_train_datasets(self) -> Dict[str, Dataset]:
-        """Load training datasets for all checkpoints."""
-        logger.info("Loading training datasets...")
+    def load_train_datasets(self) -> Dict[str, CameraTrapDataset]:
+        """Load training datasets for all checkpoints using checkpoint_info from config."""
+        self.logger.info("Loading training datasets...")
         
-        # For now, return empty dict - will be implemented based on original dataset structure
-        return {}
-    
-    def load_eval_datasets(self) -> Dict[str, Dataset]:
-        """Load evaluation datasets for all checkpoints."""
-        logger.info("Loading evaluation datasets...")
+        train_datasets = {}
         
-        # For now, return empty dict - will be implemented based on original dataset structure  
-        return {}
-    
-    def load_pretrain_dataset(self) -> Dataset:
-        """Load pretraining dataset."""
-        logger.info("Loading pretraining dataset...")
+        # The checkpoint_info is structured as {camera_name: {ckp_1: {...}, ckp_2: {...}, ...}}
+        camera_name = list(self.config.checkpoint_info.keys())[0]  # Get first (and only) camera
+        camera_data = self.config.checkpoint_info[camera_name]
         
-        # Placeholder - will implement based on original structure
-        return None
-    
-    def get_checkpoint_list(self) -> List[str]:
-        """Get list of available checkpoints."""
-        
-        # For now, return sample checkpoints
-        # Will be implemented to read from actual data config
-        return ["ckp_0", "ckp_1", "ckp_2", "ckp_3", "ckp_4"]
-    
-    def create_dataloader(self, dataset: Dataset, batch_size: int, 
-                         shuffle: bool = True, num_workers: int = 4) -> DataLoader:
-        """Create a DataLoader for the given dataset."""
-        
-        if dataset is None:
-            return None
+        for checkpoint_key, ckp_info in camera_data.items():
+            num_samples = len(ckp_info.get('samples', []))
+            if num_samples > 0:
+                self.logger.info(f"Loading training data for {checkpoint_key}: {num_samples} samples")
+                # Create proper PyTorch dataset
+                train_datasets[checkpoint_key] = CameraTrapDataset(
+                    samples=ckp_info['samples'], 
+                    class_names=ckp_info['classes']
+                )
             
+        self.logger.info(f"Loaded {len(train_datasets)} training checkpoints")
+        return train_datasets
+    
+    def load_eval_datasets(self) -> Dict[str, CameraTrapDataset]:
+        """Load evaluation datasets for all checkpoints using checkpoint_info from config."""
+        self.logger.info("Loading evaluation datasets...")
+        
+        eval_datasets = {}
+        
+        # The checkpoint_info is structured as {camera_name: {ckp_1: {...}, ckp_2: {...}, ...}}
+        camera_name = list(self.config.checkpoint_info.keys())[0]  # Get first (and only) camera
+        camera_data = self.config.checkpoint_info[camera_name]
+        
+        # Use same checkpoint data for evaluation in zero-shot mode
+        for checkpoint_key, ckp_info in camera_data.items():
+            num_samples = len(ckp_info.get('samples', []))
+            if num_samples > 0:
+                self.logger.info(f"Loading evaluation data for {checkpoint_key}: {num_samples} samples")
+                # Create proper PyTorch dataset
+                eval_datasets[checkpoint_key] = CameraTrapDataset(
+                    samples=ckp_info['samples'], 
+                    class_names=ckp_info['classes']
+                )
+            
+        self.logger.info(f"Loaded {len(eval_datasets)} evaluation checkpoints")
+        return eval_datasets
+
+    def get_legacy_samples(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Get raw sample data in the legacy format for compatibility."""
+        samples = {}
+        
+        # The checkpoint_info is structured as {camera_name: {ckp_1: {...}, ckp_2: {...}, ...}}
+        camera_name = list(self.config.checkpoint_info.keys())[0]  # Get first (and only) camera
+        camera_data = self.config.checkpoint_info[camera_name]
+        
+        # Extract samples directly from checkpoint_info
+        for ckp_key, ckp_info in camera_data.items():
+            samples[ckp_key] = ckp_info['samples']
+                    
+        return samples
+
+    def get_checkpoint_list(self) -> List[str]:
+        """Return the list of checkpoint keys for the current camera."""
+        camera_name = list(self.config.checkpoint_info.keys())[0]
+        camera_data = self.config.checkpoint_info[camera_name]
+        return list(camera_data.keys())
+
+    def create_dataloader(self, dataset: CameraTrapDataset, batch_size: int, shuffle: bool = False, 
+                         num_workers: int = 0) -> torch.utils.data.DataLoader:
+        """
+        Create a DataLoader for the given dataset.
+        
+        Args:
+            dataset: CameraTrapDataset to create DataLoader for
+            batch_size: Batch size for the DataLoader
+            shuffle: Whether to shuffle the data
+            num_workers: Number of worker processes for data loading
+            
+        Returns:
+            torch.utils.data.DataLoader: DataLoader for the dataset
+        """
         return DataLoader(
             dataset,
             batch_size=batch_size,
             shuffle=shuffle,
             num_workers=num_workers,
-            pin_memory=torch.cuda.is_available()
+            collate_fn=None  # Use default collate_fn for now
         )
 
-
-class CameraTrapDataset(Dataset):
+def get_dataloaders(config_dict):
     """
-    Camera trap dataset implementation.
-    This is a placeholder that will be implemented based on the original dataset structure.
+    Create train, validation, and test dataloaders from config.
+    
+    Args:
+        config_dict: Configuration dictionary
+        
+    Returns:
+        Tuple of (train_loader, val_loader, test_loader, class_names)
     """
+    import json
+    from torch.utils.data import DataLoader, Dataset
+    from PIL import Image
+    import torchvision.transforms as transforms
     
-    def __init__(self, data_config_path: str, class_names: List[str]):
-        self.data_config_path = data_config_path
-        self.class_names = class_names
-        self.class_to_idx = {name: idx for idx, name in enumerate(class_names)}
-        
-        # Load data configuration
-        self.samples = []
-        self._load_data_config()
-        
-    def _load_data_config(self):
-        """Load data configuration from JSON file."""
-        try:
-            with open(self.data_config_path, 'r') as f:
-                data_config = json.load(f)
+    # Load JSON data
+    data_config = config_dict['data']
+    train_path = data_config['train_path']
+    test_path = data_config['test_path']
+    
+    # Load train data
+    with open(train_path, 'r') as f:
+        train_data = json.load(f)
+    
+    # Load test data
+    with open(test_path, 'r') as f:
+        test_data = json.load(f)
+    
+    # Extract samples from all checkpoints for training
+    all_train_samples = []
+    all_classes = set()
+    
+    for ckp_key, samples in train_data.items():
+        if ckp_key.startswith('ckp_'):
+            all_train_samples.extend(samples)
+            for sample in samples:
+                all_classes.add(sample['common'])  # Use common name as class
+    
+    # Extract samples from all checkpoints for testing
+    all_test_samples = []
+    for ckp_key, samples in test_data.items():
+        if ckp_key.startswith('ckp_'):
+            all_test_samples.extend(samples)
+            for sample in samples:
+                all_classes.add(sample['common'])
+    
+    # Create class mapping
+    class_names = sorted(list(all_classes))
+    class_to_idx = {name: idx for idx, name in enumerate(class_names)}
+    
+    logger.info(f"Classes found: {len(class_names)}")
+    logger.info(f"Class names: {class_names}")
+    
+    # Store class names in config for model creation
+    config_dict['data']['class_names'] = class_names
+    config_dict['model']['num_classes'] = len(class_names)
+    
+    # Split train data into train/val
+    from sklearn.model_selection import train_test_split
+    train_samples, val_samples = train_test_split(
+        all_train_samples, 
+        test_size=data_config.get('val_split', 0.2),
+        random_state=42,
+        stratify=[s['common'] for s in all_train_samples]
+    )
+    
+    print(f"Classes found: {len(class_names)}")
+    print(f"Train samples: {len(train_samples)}")
+    print(f"Val samples: {len(val_samples)}")  
+    print(f"Test samples: {len(all_test_samples)}")
+    
+    # Create datasets
+    class SimpleCameraTrapDataset(Dataset):
+        def __init__(self, samples, class_to_idx, transform=None):
+            self.samples = samples
+            self.class_to_idx = class_to_idx
+            self.transform = transform
             
-            # Process data config to create samples list
-            # This will be implemented based on original data format
-            logger.info(f"Loaded {len(self.samples)} samples from {self.data_config_path}")
+        def __len__(self):
+            return len(self.samples)
             
-        except FileNotFoundError:
-            logger.warning(f"Data config file not found: {self.data_config_path}")
-        except Exception as e:
-            logger.error(f"Error loading data config: {e}")
-    
-    def __len__(self):
-        return len(self.samples)
-    
-    def __getitem__(self, idx):
-        """
-        Get a sample from the dataset.
-        Returns: (image_tensor, label)
-        """
-        # Placeholder implementation
-        # Will return actual image and label based on original dataset structure
-        sample = self.samples[idx] if idx < len(self.samples) else None
-        
-        if sample is None:
-            # Return dummy data for now
-            image = torch.randn(3, 224, 224)  
-            label = 0
-        else:
-            # Load and process actual image and label
-            image = torch.randn(3, 224, 224)  # Placeholder
-            label = sample.get('label', 0)
+        def __getitem__(self, idx):
+            sample = self.samples[idx]
             
-        return image, label
+            # Load actual image
+            try:
+                from PIL import Image
+                image_path = sample['image_path']
+                image = Image.open(image_path).convert('RGB')
+                
+                # Apply transforms
+                if self.transform:
+                    image = self.transform(image)
+                else:
+                    # Default transform if none provided
+                    import torchvision.transforms as transforms
+                    default_transform = transforms.Compose([
+                        transforms.Resize((224, 224)),
+                        transforms.ToTensor(),
+                        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                    ])
+                    image = default_transform(image)
+                    
+            except Exception as e:
+                # Fallback to dummy tensor if image loading fails
+                print(f"Warning: Could not load image {sample['image_path']}: {e}")
+                image = torch.randn(3, 224, 224)
+            
+            label = self.class_to_idx[sample['common']]
+            
+            return {
+                'image': image,
+                'label': label,
+                'image_path': sample['image_path'],
+                'common_name': sample['common']
+            }
     
-    def get_subset(self, is_train: bool = True, ckp_list: str = None) -> 'CameraTrapDataset':
-        """
-        Get a subset of the dataset for specific checkpoints.
-        This mirrors the functionality from the original implementation.
-        """
-        # Create a new dataset instance with filtered samples
-        subset = CameraTrapDataset(self.data_config_path, self.class_names)
-        
-        # Filter samples based on checkpoint and train/eval split
-        # This will be implemented based on original logic
-        subset.samples = self.samples.copy()  # Placeholder
-        
-        return subset
+    # Create simple transforms
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    # Create datasets
+    train_dataset = SimpleCameraTrapDataset(train_samples, class_to_idx, transform)
+    val_dataset = SimpleCameraTrapDataset(val_samples, class_to_idx, transform)
+    test_dataset = SimpleCameraTrapDataset(all_test_samples, class_to_idx, transform)
+    
+    # Create dataloaders
+    training_config = config_dict['training']
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=training_config['batch_size'],
+        shuffle=True,
+        num_workers=0,  # Set to 0 for debugging
+        pin_memory=False  # Disable for debugging
+    )
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=training_config.get('eval_batch_size', training_config['batch_size']),
+        shuffle=False,
+        num_workers=0,  # Set to 0 for debugging
+        pin_memory=False  # Disable for debugging
+    )
+    
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=training_config.get('eval_batch_size', training_config['batch_size']),
+        shuffle=False,
+        num_workers=0,  # Set to 0 for debugging  
+        pin_memory=False  # Disable for debugging
+    )
+    
+    return train_loader, val_loader, test_loader

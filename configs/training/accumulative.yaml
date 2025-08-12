@@ -1,0 +1,49 @@
+# Accumulative Configuration
+# Based on ICICLE-Benchmark accumulative-scratch.yaml - continual learning approach
+experiment:
+  name: "bioclip_accumulative"
+  description: "Accumulative continual learning with BioCLIP from scratch"
+  output_dir: "logs/accumulative"
+
+model:
+  name: "bioclip"
+  pretrained: true
+  freeze_backbone: false  # Allow fine-tuning
+  use_peft: false
+
+training:
+  epochs: 30
+  learning_rate: 0.0001
+  batch_size: 128
+  eval_batch_size: 512
+  weight_decay: 0.0001
+  optimizer: "AdamW"
+  scheduler: "CosineAnnealingLR"
+  scheduler_params:
+    T_max: 30
+    eta_min: 0.00001
+  loss_type: "ce"
+  chop_head: false
+
+modules:
+  ood:
+    method: "all"
+    enabled: true
+  active_learning:
+    method: "all"
+    enabled: true
+  continual_learning:
+    method: "accumulative-scratch"
+    enabled: true
+  calibration:
+    enabled: false
+
+# Accumulative learning settings (based on accumulative-scratch.yaml)
+pretrain:
+  enabled: false  # Start from scratch, no pretraining
+
+continual_learning:
+  method: "accumulative-scratch"
+  epochs: 30
+  loss_type: "ce"
+  reset_head: true  # Start with fresh classification head

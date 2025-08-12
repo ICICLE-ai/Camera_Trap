@@ -1,0 +1,46 @@
+# Oracle Configuration  
+# Based on ICICLE-Benchmark percentage-1.yaml - full pretraining then evaluation
+experiment:
+  name: "bioclip_oracle"
+  description: "Oracle training with full dataset pretraining using BioCLIP"
+  output_dir: "logs/oracle"
+
+model:
+  name: "bioclip"
+  pretrained: true
+  freeze_backbone: false  # Allow fine-tuning
+  use_peft: false
+
+training:
+  epochs: 30
+  learning_rate: 0.0001
+  batch_size: 128
+  eval_batch_size: 512
+  weight_decay: 0.0001
+  optimizer: "AdamW"
+  scheduler: "CosineAnnealingLR"
+  scheduler_params:
+    T_max: 30
+    eta_min: 0.00001
+  loss_type: "ce"
+  chop_head: false
+
+modules:
+  ood:
+    method: "none"
+    enabled: false
+  active_learning:
+    method: "none"
+    enabled: false
+  continual_learning:
+    method: "none"
+    enabled: false
+  calibration:
+    enabled: false
+
+# Oracle pretraining settings (based on percentage-1.yaml)
+pretrain:
+  enabled: true
+  epochs: 30
+  loss_type: "ce"
+  use_full_dataset: true  # Use all available training data
