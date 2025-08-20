@@ -169,6 +169,9 @@ def create_model(config_dict):
         # Use BioCLIP model with pre-trained weights
         from .bioclip_model import create_bioclip_model
         
+        # Get model version from config (default to v1)
+        model_version = model_config.get('version', 'v1')
+        
         # Generate class names (in real scenario, these come from data)
         class_names = [f"class_{i}" for i in range(num_classes)]
         
@@ -177,21 +180,32 @@ def create_model(config_dict):
         if 'class_names' in data_config and data_config['class_names']:
             class_names = data_config['class_names']
         
-        # Look for pre-trained weights
+        # Look for pre-trained weights based on version
         pretrained_path = None
-        bioclip_weight_paths = [
-            'pretrained_weight/bioclip/open_clip_pytorch_model.bin',
-            'ICICLE-Benchmark/pretrained_weight/bioclip/open_clip_pytorch_model.bin'
-        ]
+        if model_version == 'v2':
+            # BioCLIP v2 paths (prioritize .bin over safetensors due to compatibility issues)
+            bioclip_weight_paths = [
+                'pretrained_weight/bioclip-2/open_clip_pytorch_model.bin',
+                'pretrained_weight/bioclip-2/open_clip_model.safetensors',
+                'ICICLE-Benchmark/pretrained_weight/bioclip-2/open_clip_pytorch_model.bin',
+                'ICICLE-Benchmark/pretrained_weight/bioclip-2/open_clip_model.safetensors'
+            ]
+            logger.info("Looking for BioCLIP v2 weights...")
+        else:  # v1 (default)
+            bioclip_weight_paths = [
+                'pretrained_weight/bioclip/open_clip_pytorch_model.bin',
+                'ICICLE-Benchmark/pretrained_weight/bioclip/open_clip_pytorch_model.bin'
+            ]
+            logger.info("Looking for BioCLIP v1 weights...")
         
         for path in bioclip_weight_paths:
             if os.path.exists(path):
                 pretrained_path = path
-                logger.info(f"Found BioCLIP weights at: {path}")
+                logger.info(f"Found BioCLIP {model_version} weights at: {path}")
                 break
         
         if pretrained_path is None:
-            logger.warning("No local BioCLIP weights found in expected locations")
+            logger.warning(f"No local BioCLIP {model_version} weights found in expected locations")
             logger.info("Expected locations:")
             for path in bioclip_weight_paths:
                 logger.info(f"  - {path}")
@@ -203,12 +217,13 @@ def create_model(config_dict):
                     num_classes=num_classes,
                     class_names=class_names,
                     pretrained_path=pretrained_path,
+                    version=model_version,
                     device='cuda' if torch.cuda.is_available() else 'cpu'
                 )
-                logger.info(f"Created BioCLIP model with {num_classes} classes")
+                logger.info(f"Created BioCLIP {model_version} model with {num_classes} classes")
                 
             except Exception as e:
-                logger.error(f"Failed to create BioCLIP model: {e}")
+                logger.error(f"Failed to create BioCLIP {model_version} model: {e}")
                 logger.info("Falling back to PlaceholderModel")
                 model = PlaceholderModel(num_classes)
             

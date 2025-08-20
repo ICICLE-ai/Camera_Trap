@@ -1,43 +1,59 @@
 # Zero-Shot Configuration
-# Based on ICICLE-Benchmark zs.yaml - no training, pure zero-shot BioCLIP evaluation
+# Pure evaluation approach - no training, only inference using pre-trained weights
+
+# ========================================
+# EXPERIMENT CONFIGURATION
+# ========================================
 experiment:
-  name: "bioclip_zero_shot"
-  description: "Zero-shot evaluation using BioCLIP without any fine-tuning"
-  output_dir: "logs/zs"
+  name: "zero_shot"
+  description: "Zero-shot evaluation without training"
 
+# ========================================  
+# MODEL CONFIGURATION
+# ========================================
 model:
-  name: "bioclip"
-  pretrained: true
-  freeze_backbone: true  # No training, just zero-shot inference
-  use_peft: false
+  name: "bioclip"              # Model type: bioclip
+  pretrained: true             # Use pre-trained weights: true/false
+  use_peft: false             # Parameter-efficient fine-tuning: true/false
+  freeze_backbone: true       # Freeze backbone weights: true/false (true for zero-shot)
+  version: "v2"               # Model version: v1/v2
+  num_classes: null           # Auto-detected from data
 
+# ========================================
+# TRAINING CONFIGURATION  
+# ========================================
 training:
-  epochs: 0  # No training epochs for zero-shot
-  learning_rate: 0.0001  # Not used but kept for consistency
-  batch_size: 128
-  eval_batch_size: 512
-  weight_decay: 0.0001
-  optimizer: "AdamW"
-  scheduler: "CosineAnnealingLR"
+  epochs: 0                   # Number of training epochs (0 for zero-shot)
+  train_batch_size: 128       # Training batch size
+  eval_batch_size: 512        # Evaluation batch size
+  num_workers: 4              # Data loading workers
+  chop_head: false            # Whether to reinitialize classification head
+  
+  # Optimizer configuration
+  optimizer_name: "AdamW"     # Optimizer type: AdamW/Adam/SGD
+  optimizer_params:
+    lr: 0.000025              # Learning rate
+    weight_decay: 0.0001      # Weight decay for regularization
+    
+  # Scheduler configuration  
+  scheduler: "CosineAnnealingLR"  # Learning rate scheduler
   scheduler_params:
-    T_max: 30
-    eta_min: 0.00001
-  loss_type: "ce"
-  chop_head: false
-
-modules:
-  ood:
-    method: "none"
-    enabled: false
-  active_learning:
-    method: "none"
-    enabled: false
-  continual_learning:
-    method: "none"
-    enabled: false
-  calibration:
-    enabled: false
-
-# Zero-shot specific settings
-pretrain:
-  enabled: false  # No pretraining needed for zero-shot
+    T_max: 30                   # Maximum number of iterations
+    eta_min: 0.0000025          # Minimum learning rate
+  
+# ========================================
+# SYSTEM CONFIGURATION
+# ========================================  
+system:
+  device: "cuda"              # Device: cuda/cpu
+  seed: 42                    # Random seed for reproducibility
+  debug: false                # Debug mode: true/false
+  gpu_cleanup: false          # GPU memory cleanup: true/false
+  
+# ========================================
+# EVALUATION CONFIGURATION
+# ========================================
+evaluation:
+  eval_only: true             # Only run evaluation: true/false (true for zero-shot)
+  calibration: false          # Enable calibration: true/false
+  no_save: false              # Skip saving results: true/false

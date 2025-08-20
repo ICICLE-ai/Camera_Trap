@@ -17,7 +17,7 @@ def set_seed(seed: int = 42):
     Args:
         seed: Random seed value
     """
-    logger.info(f"Setting random seed to {seed}")
+    # logger.info(f"Setting random seed to {seed}")
     
     # Python random
     random.seed(seed)

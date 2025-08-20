@@ -1,49 +1,59 @@
-# Accumulative Configuration
-# Based on ICICLE-Benchmark accumulative-scratch.yaml - continual learning approach
+# Accumulative Training Configuration
+# Progressive temporal training approach - trains incrementally on data over time
+
+# ========================================
+# EXPERIMENT CONFIGURATION
+# ========================================
 experiment:
-  name: "bioclip_accumulative"
-  description: "Accumulative continual learning with BioCLIP from scratch"
-  output_dir: "logs/accumulative"
+  name: "accumulative"
+  description: "Accumulative continual learning"
 
+# ========================================  
+# MODEL CONFIGURATION
+# ========================================
 model:
-  name: "bioclip"
-  pretrained: true
-  freeze_backbone: false  # Allow fine-tuning
-  use_peft: false
+  name: "bioclip"              # Model type: bioclip
+  pretrained: true             # Use pre-trained weights: true/false
+  use_peft: false             # Parameter-efficient fine-tuning: true/false
+  freeze_backbone: false      # Freeze backbone weights: true/false
+  version: "v2"               # Model version: v1/v2
+  num_classes: null           # Auto-detected from data
 
+# ========================================
+# TRAINING CONFIGURATION  
+# ========================================
 training:
-  epochs: 30
-  learning_rate: 0.0001
-  batch_size: 128
-  eval_batch_size: 512
-  weight_decay: 0.0001
-  optimizer: "AdamW"
-  scheduler: "CosineAnnealingLR"
+  epochs: 30                  # Number of training epochs
+  train_batch_size: 128       # Training batch size
+  eval_batch_size: 512        # Evaluation batch size
+  num_workers: 4              # Data loading workers
+  chop_head: false            # Whether to reinitialize classification head
+  
+  # Optimizer configuration
+  optimizer_name: "AdamW"     # Optimizer type: AdamW/Adam/SGD
+  optimizer_params:
+    lr: 0.000025              # Learning rate
+    weight_decay: 0.0001      # Weight decay for regularization
+    
+  # Scheduler configuration  
+  scheduler: "CosineAnnealingLR"  # Learning rate scheduler
   scheduler_params:
-    T_max: 30
-    eta_min: 0.00001
-  loss_type: "ce"
-  chop_head: false
-
-modules:
-  ood:
-    method: "all"
-    enabled: true
-  active_learning:
-    method: "all"
-    enabled: true
-  continual_learning:
-    method: "accumulative-scratch"
-    enabled: true
-  calibration:
-    enabled: false
-
-# Accumulative learning settings (based on accumulative-scratch.yaml)
-pretrain:
-  enabled: false  # Start from scratch, no pretraining
-
-continual_learning:
-  method: "accumulative-scratch"
-  epochs: 30
-  loss_type: "ce"
-  reset_head: true  # Start with fresh classification head
+    T_max: 30                   # Maximum number of iterations
+    eta_min: 0.0000025          # Minimum learning rate
+  
+# ========================================
+# SYSTEM CONFIGURATION
+# ========================================  
+system:
+  device: "cuda"              # Device: cuda/cpu
+  seed: 42                    # Random seed for reproducibility
+  debug: false                # Debug mode: true/false
+  gpu_cleanup: false          # GPU memory cleanup: true/false
+  
+# ========================================
+# EVALUATION CONFIGURATION
+# ========================================
+evaluation:
+  eval_only: false            # Only run evaluation: true/false
+  calibration: false          # Enable calibration: true/false
+  no_save: false              # Skip saving results: true/false

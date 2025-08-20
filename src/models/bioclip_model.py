@@ -280,10 +280,17 @@ def get_simple_class_embeddings(model, tokenizer, class_names: List[str]) -> tor
     device = next(model.parameters()).device
     context_length = getattr(model, 'context_length', 77)
     
-    # Get embedding dimension
-    embed_dim = getattr(model, 'embed_dim', 512)
+    # Get embedding dimension from the actual model
+    embed_dim = getattr(model, 'embed_dim', None)
+    if embed_dim is None:
+        # For CLIP models, try different attribute names
+        embed_dim = getattr(model, 'text_projection', None)
+        if embed_dim is not None:
+            embed_dim = embed_dim.shape[1] if hasattr(embed_dim, 'shape') else embed_dim
+        else:
+            embed_dim = 512  # Fallback
     
-    logger.info(f"Generating simple class embeddings for {len(class_names)} classes")
+    logger.info(f"Generating simple class embeddings for {len(class_names)} classes with embed_dim={embed_dim}")
     
     with torch.no_grad():
         class_embeddings = torch.empty(len(class_names), embed_dim)
@@ -321,6 +328,7 @@ def get_simple_class_embeddings(model, tokenizer, class_names: List[str]) -> tor
 
 def create_bioclip_model(num_classes: int, class_names: List[str], 
                         pretrained_path: Optional[str] = None,
+                        version: str = 'v1',
                         device: str = 'cuda') -> BioCLIPClassifier:
     """
     Create BioCLIP classifier with pre-trained weights.
@@ -329,6 +337,7 @@ def create_bioclip_model(num_classes: int, class_names: List[str],
         num_classes: Number of classes
         class_names: List of class names
         pretrained_path: Path to pre-trained BioCLIP weights
+        version: BioCLIP version ('v1' or 'v2')
         device: Device to load model on
         
     Returns:
@@ -343,38 +352,73 @@ def create_bioclip_model(num_classes: int, class_names: List[str],
         return create_bioclip_placeholder(num_classes, device)
     
     # Default BioCLIP configuration
-    model_name = 'ViT-B-16'
+    if version == 'v2':
+        # BioCLIP v2 uses ViT-L-14 architecture (based on config)
+        model_name = 'ViT-L-14'  # Larger model with patch size 14
+        precision = 'fp32'
+        force_image_size = 224
+        logger.info(f"Using BioCLIP v2 architecture: {model_name}")
+    else:  # v1
+        model_name = 'ViT-B-16'
+        precision = 'fp32'
+        force_image_size = None
+        logger.info(f"Using BioCLIP v1 architecture: {model_name}")
     
     # Try to load from HuggingFace if no local path provided
     if pretrained_path is None:
-        logger.info("No local BioCLIP weights specified, looking for local weights first")
+        logger.info(f"No local BioCLIP {version} weights specified, looking for local weights first")
         
-        # Check for local BioCLIP weights
-        local_paths = [
-            'pretrained_weight/bioclip/open_clip_pytorch_model.bin',
-            'ICICLE-Benchmark/pretrained_weight/bioclip/open_clip_pytorch_model.bin'
-        ]
+        # Check for local BioCLIP weights based on version
+        if version == 'v2':
+            local_paths = [
+                'pretrained_weight/bioclip-2/open_clip_pytorch_model.bin',
+                'pretrained_weight/bioclip-2/open_clip_model.safetensors',
+                'ICICLE-Benchmark/pretrained_weight/bioclip-2/open_clip_pytorch_model.bin',
+                'ICICLE-Benchmark/pretrained_weight/bioclip-2/open_clip_model.safetensors'
+            ]
+        else:  # v1
+            local_paths = [
+                'pretrained_weight/bioclip/open_clip_pytorch_model.bin',
+                'ICICLE-Benchmark/pretrained_weight/bioclip/open_clip_pytorch_model.bin'
+            ]
         
         for path in local_paths:
             if os.path.exists(path):
                 pretrained_path = path
-                logger.info(f"Found local BioCLIP weights at: {path}")
+                logger.info(f"Found local BioCLIP {version} weights at: {path}")
                 break
     
     # Load from local weights
     if pretrained_path and os.path.exists(pretrained_path):
-        logger.info(f"Loading BioCLIP from local weights: {pretrained_path}")
+        logger.info(f"Loading BioCLIP {version} from local weights: {pretrained_path}")
         try:
-            model, preprocess_train, preprocess_val = create_model_and_transforms(
-                model_name,
-                pretrained_path,
-                precision='fp32',
-                device=device,
-                jit=False,
-                force_quick_gelu=False,
-                force_custom_text=False,
-                output_dict=True,
-            )
+            # Special handling for BioCLIP v2
+            if version == 'v2':
+                # Try with specific settings for BioCLIP v2
+                model, preprocess_train, preprocess_val = create_model_and_transforms(
+                    model_name,
+                    pretrained_path,
+                    precision=precision,
+                    device=device,
+                    jit=False,
+                    force_quick_gelu=False,
+                    force_custom_text=False,
+                    force_image_size=force_image_size,
+                    pretrained_image=False,  # Don't load pretrained image weights
+                    output_dict=True,
+                )
+            else:
+                # BioCLIP v1 with original settings
+                model, preprocess_train, preprocess_val = create_model_and_transforms(
+                    model_name,
+                    pretrained_path,
+                    precision=precision,
+                    device=device,
+                    jit=False,
+                    force_quick_gelu=False,
+                    force_custom_text=False,
+                    output_dict=True,
+                )
             
             # Load tokenizer from same directory
             tokenizer_path = os.path.dirname(pretrained_path)
@@ -382,11 +426,11 @@ def create_bioclip_model(num_classes: int, class_names: List[str],
             logger.info(f"Loaded tokenizer from: {tokenizer_path}")
             
         except Exception as e:
-            logger.error(f"Failed to load BioCLIP from local weights: {e}")
+            logger.error(f"Failed to load BioCLIP {version} from local weights: {e}")
             return create_bioclip_placeholder(num_classes, device)
     
     else:
-        logger.warning("No local BioCLIP weights found, this should not happen")
+        logger.warning(f"No local BioCLIP {version} weights found, this should not happen")
         return create_bioclip_placeholder(num_classes, device)
     
     # Create classifier
@@ -418,7 +462,7 @@ def create_bioclip_model(num_classes: int, class_names: List[str],
         classifier.reset_head()
     
     classifier = classifier.to(device)
-    logger.info(f"Created BioCLIP classifier with {num_classes} classes")
+    logger.info(f"Created BioCLIP {version} classifier with {num_classes} classes")
     
     return classifier
 

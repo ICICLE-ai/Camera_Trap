@@ -15,13 +15,6 @@ training:
   scheduler: null
 
 data:
-  dataset: "APN_K024"
-  data_dir: "data/APN/APN_K024"
-  train_path: "data/APN/APN_K024/30/train.json"
-  test_path: "data/APN/APN_K024/30/test.json"
-  val_path: null  # Will split from train if not provided
-  image_dir: "data/APN/APN_K024/images"
-  
   # Data preprocessing
   image_size: 224
   normalize:

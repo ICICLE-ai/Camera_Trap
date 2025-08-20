@@ -3,3 +3,6 @@ data/*
 *.log
 *.pth
 pretrained_weight/*
+*.txt
+logs/*
+launch.json
