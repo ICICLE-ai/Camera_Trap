@@ -13,7 +13,7 @@ from typing import Dict, Any, Optional
 class ICICLEColorFormatter(logging.Formatter):
     """Enhanced color formatter matching ICICLE-Benchmark reference style."""
     
-    # ANSI color codes - matching ICICLE reference
+    # ANSI color codes - matching ICICLE styles
     COLORS = {
         'DEBUG': '\033[38;5;245m',    # Gray
         'INFO': '\033[97m',           # Bright white
@@ -273,37 +273,34 @@ class ICICLELogger:
     def log_training_header(self, mode: str, epochs: int):
         """Log clean training header like the example."""
         logger = logging.getLogger()
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         logger.info("")
         logger.info("=" * 60)
-        logger.info(f"{timestamp}")
         logger.info(f"              🚀 Training {mode} - {epochs} epochs")
-        logger.info(f"{timestamp}")
         logger.info("=" * 60)
-        logger.info(f"{timestamp}")
 
     def log_training_epoch(self, epoch: int, phase: str, loss: float, acc: float, 
                           bal_acc: float, lr: float, samples: Optional[int] = None, 
-                          is_best: bool = False):
+                          is_best: bool = False, emoji: str = None):
         """Log training epoch in clean format matching the example."""
         logger = logging.getLogger()
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # Choose emoji based on phase
-        if phase.upper() == "TRAIN":
-            emoji = "🔹"
-        elif phase.upper() == "VAL":
-            emoji = "🔸"
-        elif phase.upper() == "TEST":
-            emoji = "🔻"
+        # Choose emoji based on phase or use custom emoji
+        if emoji:
+            selected_emoji = emoji
+        elif phase.upper() == "TRAIN":
+            selected_emoji = "🔹"
+        elif phase.upper() == "VAL" or "VAL" in phase.upper():
+            selected_emoji = "🔸"
+        elif phase.upper() == "TEST" or "TEST" in phase.upper():
+            selected_emoji = "🔻"
         else:
-            emoji = "📊"
+            selected_emoji = "📊"
         
         # Format metrics
         metrics_str = f"Loss: {loss:.4f} | Acc: {acc:.4f} | Bal.Acc: {bal_acc:.4f}"
         
-        if phase.upper() == "TRAIN":
+        if lr is not None and (phase.upper() == "TRAIN" or "ROUND" in phase.upper()):
             metrics_str += f" | LR: {lr:.8f}"
         
         if samples is not None:
@@ -312,22 +309,18 @@ class ICICLELogger:
         if is_best:
             metrics_str += " ✓ BEST ACC (↑) SAVED"
         
-        logger.info(f"{timestamp}")
-        logger.info(f"{timestamp[:-9]}:{timestamp[-8:]} - root - INFO - {emoji} Epoch {epoch:2d} [{phase.upper():>5}] {metrics_str}")
+        logger.info(f"{selected_emoji} Epoch {epoch:2d} [{phase.upper():>5}] {metrics_str}")
 
     def log_training_separator(self):
         """Log separator line for training epochs."""
         logger = logging.getLogger()
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        logger.info(f"{timestamp}")
-        logger.info(f"{timestamp[:-9]}:{timestamp[-8:]} - root - INFO - " + "─" * 80)
+        logger.info("─" * 80)
 
     def log_training_summary(self, epoch: int, train_acc: float, train_bal_acc: float,
                            val_acc: float, val_bal_acc: float, val_loss: float, 
                            lr: float, status: str = ""):
         """Log epoch summary in clean format."""
         logger = logging.getLogger()
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         summary = (f"Epoch {epoch}: train_acc={train_acc:.4f}, train_balanced_acc={train_bal_acc:.4f}, "
                   f"val_acc={val_acc:.4f}, val_balanced_acc={val_bal_acc:.4f}, "
@@ -336,29 +329,24 @@ class ICICLELogger:
         if status:
             summary += f" ({status})"
         
-        logger.info(f"{timestamp}")
-        logger.info(f"{timestamp[:-9]}:{timestamp[-8:]} - root - INFO - {summary}")
+        logger.info(summary)
 
     def log_model_summary(self, model_type: str, num_classes: int, model_path: str = None):
         """Log concise model loading summary."""
         logger = logging.getLogger()
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        logger.info(f"{timestamp}")
         if model_path:
-            logger.info(f"{timestamp[:-9]}:{timestamp[-8:]} - root - INFO - 🤖 Loaded {model_type} model ({num_classes} classes) from {model_path}")
+            logger.info(f"🤖 Loaded {model_type} model ({num_classes} classes) from {model_path}")
         else:
-            logger.info(f"{timestamp[:-9]}:{timestamp[-8:]} - root - INFO - 🤖 Created {model_type} model ({num_classes} classes)")
+            logger.info(f"🤖 Created {model_type} model ({num_classes} classes)")
 
     def log_class_distribution(self, class_stats: dict, total_train: int = None, total_val: int = None):
         """Log per-class distribution table."""
         logger = logging.getLogger()
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        logger.info(f"{timestamp}")
-        logger.info(f"{timestamp[:-9]}:{timestamp[-8:]} - root - INFO - ℹ️  📋 Per-class distribution:")
-        logger.info(f"{timestamp[:-9]}:{timestamp[-8:]} - root - INFO - ℹ️  Class                Train    Val      Val%    ")
-        logger.info(f"{timestamp[:-9]}:{timestamp[-8:]} - root - INFO - ℹ️  " + "─" * 54)
+        logger.info("ℹ️  📋 Per-class distribution:")
+        logger.info("ℹ️  Class                Train    Val      Val%    ")
+        logger.info("ℹ️  " + "─" * 54)
         
         total_train_count = 0
         total_val_count = 0
@@ -371,70 +359,39 @@ class ICICLELogger:
             total_train_count += train_count
             total_val_count += val_count
             
-            logger.info(f"{timestamp[:-9]}:{timestamp[-8:]} - root - INFO - ℹ️  {class_name:<20} {train_count:<8} {val_count:<8} {val_percent:<7.1f} %")
+            logger.info(f"ℹ️  {class_name:<20} {train_count:<8} {val_count:<8} {val_percent:<7.1f} %")
         
-        logger.info(f"{timestamp[:-9]}:{timestamp[-8:]} - root - INFO - ℹ️  " + "─" * 54)
+        logger.info("ℹ️  " + "─" * 54)
         total_val_percent = (total_val_count / total_train_count * 100) if total_train_count > 0 else 0
-        logger.info(f"{timestamp[:-9]}:{timestamp[-8:]} - root - INFO - ℹ️  TOTAL                {total_train_count:<8} {total_val_count:<8} {total_val_percent:<7.1f} %")
+        logger.info(f"ℹ️  TOTAL                {total_train_count:<8} {total_val_count:<8} {total_val_percent:<7.1f} %")
 
     def log_training_completion(self, mode: str):
         """Log training completion."""
         logger = logging.getLogger()
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         logger.info("")
         logger.info("=" * 60)
-        logger.info(f"{timestamp}")
         logger.info(f"              ✅ Training {mode} completed successfully")
-        logger.info(f"{timestamp}")
         logger.info("=" * 60)
         logger.info("")
 
     def log_model_info(self, message: str):
         """Log model information with timestamp."""
         logger = logging.getLogger()
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        logger.info(f"{timestamp}")
-        logger.info(f"{timestamp[:-9]}:{timestamp[-8:]} - root - INFO - {message}")
+        logger.info(message)
 
     # ========== NEW STRUCTURED LOGGING METHODS ==========
     
     def log_initial_setup(self, experiment_dir: str, log_file: str, seed: int, 
                          camera: str, num_checkpoints: int, train_path: str, test_path: str):
-        """Log initial setup information in organized table format."""
-        logger = logging.getLogger()
-        
-        # Initial setup information in table format
-        setup_configs = [
-            ("Log Dir", experiment_dir),
-            ("Random Seed", seed),
-            ("Camera", camera),
-            ("Ckpt", num_checkpoints),
-            ("Train Path", train_path),
-            ("Test Path", test_path),
-        ]
-        
-        # Fixed column widths
-        key_width = 17
-        val_width = 60
-        
-        logger.info("📋 Initial Setup:")
-        logger.info(f"   {'Parameter':<{key_width}} : {'Value':<{val_width}}")
-        logger.info(f"   {'-' * key_width} : {'-' * val_width}")
-        
-        for key, value in setup_configs:
-            # Truncate long paths if needed
-            if isinstance(value, str) and len(value) > val_width:
-                display_value = "..." + value[-(val_width-3):]
-            else:
-                display_value = str(value)
-            logger.info(f"   {key:<{key_width}} : {display_value:<{val_width}}")
-        
-        logger.info("")
+        """Log initial setup information - now merged into setup_details."""
+        # This function is now deprecated and does nothing
+        # All logging is handled by log_setup_details
+        pass
     
-    def log_setup_details(self, camera: str, log_location: str, model_info: dict, config_dict: dict):
-        """Log setup details - Phase 1 of logging structure."""
+    def log_setup_details(self, camera: str, log_location: str, model_info: dict, config_dict: dict, 
+                         num_checkpoints: int = None, train_path: str = None, test_path: str = None):
+        """Log setup details - Phase 1 of logging structure with merged initial setup."""
         logger = logging.getLogger()
         
         logger.info("=" * 80)
@@ -442,17 +399,19 @@ class ICICLELogger:
         logger.info("=" * 80)
         logger.info("")
         
-        # Setup information in table format
+        # Merged setup information in table format (combining initial setup)
         setup_configs = [
             ("Camera", camera),
-            ("Log Location", log_location),
+            ("Ckpt", num_checkpoints if num_checkpoints is not None else "auto"),
+            ("Train Path", train_path if train_path else "auto-detected"),
+            ("Test Path", test_path if test_path else "auto-detected"),
+            ("Log Dir", log_location),
             ("Random Seed", config_dict.get('seed', 42)),
-            ("Validation", "passed"),
         ]
         
         # Fixed column widths matching the style
         key_width = 15
-        val_width = 50
+        val_width = 60
         
         logger.info("🔧 Setup Information:")
         logger.info(f"   {'Parameter':<{key_width}} : {'Value':<{val_width}}")
@@ -461,7 +420,7 @@ class ICICLELogger:
         for key, value in setup_configs:
             # Truncate long values if needed
             if isinstance(value, str) and len(value) > val_width:
-                display_value = value[:val_width-3] + "..."
+                display_value = "..." + value[-(val_width-3):]
             else:
                 display_value = str(value)
             logger.info(f"   {key:<{key_width}} : {display_value:<{val_width}}")
@@ -569,10 +528,123 @@ class ICICLELogger:
         
         logger.info("")
         
-        # Per-class distribution
-        self._log_class_distribution_table(class_distribution)
+        # Per-class distribution - simple Train/Test overview
+        self.log_dataset_overview(class_distribution)
         logger.info("")
     
+    def log_dataset_overview(self, class_distribution: dict):
+        """Log simple dataset overview showing only Train and Test columns."""
+        logger = logging.getLogger()
+        
+        logger.info("ℹ️  📋 Per-class distribution:")
+        logger.info("ℹ️  Class                Train    Test     ")
+        logger.info("ℹ️  " + "─" * 40)
+        
+        total_train = 0
+        total_test = 0
+        
+        # Sort classes by training count (descending)
+        sorted_classes = sorted(class_distribution.items(), 
+                              key=lambda x: x[1].get('train', 0), reverse=True)
+        
+        for class_name, stats in sorted_classes:
+            train_count = stats.get('train', 0)
+            test_count = stats.get('test', 0)
+            
+            total_train += train_count
+            total_test += test_count
+            
+            # Truncate class name if too long
+            display_name = class_name[:20] if len(class_name) <= 20 else class_name[:17] + "..."
+            
+            logger.info(f"ℹ️  {display_name:<20} {train_count:<8} {test_count:<8}")
+        
+        logger.info("ℹ️  " + "─" * 40)
+        logger.info(f"ℹ️  TOTAL                {total_train:<8} {total_test:<8}")
+
+    def log_oracle_validation_distribution(self, class_distribution: dict):
+        """Log Oracle validation strategy showing Train, Test, Val columns with (-number) indicators."""
+        logger = logging.getLogger()
+        
+        logger.info("ℹ️  📋 Oracle Validation Strategy (2 samples per class):")
+        logger.info("ℹ️  Class                Train    Test     Val      Val%    ")
+        logger.info("ℹ️  " + "─" * 60)
+        
+        total_train = 0
+        total_test = 0
+        total_val = 0
+        
+        # Sort classes by training count (descending)
+        sorted_classes = sorted(class_distribution.items(), 
+                              key=lambda x: x[1].get('original_train', 0), reverse=True)
+        
+        for class_name, stats in sorted_classes:
+            original_train = stats.get('original_train', 0)
+            test_count = stats.get('test', 0)
+            val_count = stats.get('val', 0)
+            val_from_train = stats.get('val_from_train', 0)
+            val_from_test = stats.get('val_from_test', 0)
+            
+            # Calculate final train count after validation removal
+            final_train = original_train - val_from_train
+            
+            total_train += final_train
+            total_test += test_count
+            total_val += val_count
+            
+            val_percent = (val_count / original_train * 100) if original_train > 0 else 0
+            
+            # Truncate class name if too long
+            display_name = class_name[:20] if len(class_name) <= 20 else class_name[:17] + "..."
+            
+            # Add indicators for where validation samples came from
+            train_display = str(final_train)
+            test_display = str(test_count)
+            
+            if val_from_train > 0:
+                train_display += f"(-{val_from_train})"
+            if val_from_test > 0:
+                test_display += f"(-{val_from_test})"
+            
+            logger.info(f"ℹ️  {display_name:<20} {train_display:<8} {test_display:<8} {val_count:<8} {val_percent:<7.1f} %")
+        
+        logger.info("ℹ️  " + "─" * 60)
+        total_val_percent = (total_val / (total_train + total_val) * 100) if (total_train + total_val) > 0 else 0
+        logger.info(f"ℹ️  TOTAL                {total_train:<8} {total_test:<8} {total_val:<8} {total_val_percent:<7.1f} %")
+
+    def log_accumulative_checkpoint_validation(self, checkpoint: str, class_distribution: dict):
+        """Log Accumulative validation for specific checkpoint (using that checkpoint's test data as validation)."""
+        logger = logging.getLogger()
+        
+        logger.info(f"ℹ️  📋 Accumulative Training {checkpoint} - Validation Strategy:")
+        logger.info("ℹ️  Class                Train    Val      Val%    ")
+        logger.info("ℹ️  " + "─" * 54)
+        
+        total_train = 0
+        total_val = 0
+        
+        # Sort classes by training count (descending)
+        sorted_classes = sorted(class_distribution.items(), 
+                              key=lambda x: x[1].get('train', 0), reverse=True)
+        
+        for class_name, stats in sorted_classes:
+            train_count = stats.get('train', 0)
+            val_count = stats.get('val', 0)
+            val_percent = (val_count / train_count * 100) if train_count > 0 else 0
+            
+            total_train += train_count
+            total_val += val_count
+            
+            # Truncate class name if too long
+            display_name = class_name[:20] if len(class_name) <= 20 else class_name[:17] + "..."
+            
+            logger.info(f"ℹ️  {display_name:<20} {train_count:<8} {val_count:<8} {val_percent:<7.1f} %")
+        
+        logger.info("ℹ️  " + "─" * 54)
+        total_val_percent = (total_val / train_count * 100) if train_count > 0 else 0
+        logger.info(f"ℹ️  TOTAL                {total_train:<8} {total_val:<8} {total_val_percent:<7.1f} %")
+        logger.info(f"ℹ️  Note: Validation samples are from {checkpoint} test data")
+
     def _log_class_distribution_table(self, class_distribution: dict):
         """Log per-class distribution in the exact format requested."""
         logger = logging.getLogger()
@@ -618,7 +690,7 @@ class ICICLELogger:
         
         # Training information in table format
         training_configs = [
-            ("Mode", f"{mode} training"),
+            ("Mode", f"{mode}"),
             ("Epochs", epochs),
         ]
         

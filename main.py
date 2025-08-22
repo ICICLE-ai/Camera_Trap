@@ -83,6 +83,10 @@ def parse_args():
     parser.add_argument('--epochs', type=int, help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, help='Training batch size')
     parser.add_argument('--lr', type=float, help='Learning rate')
+    parser.add_argument('--train_val', action='store_true', 
+                       help='Run validation after each training epoch')
+    parser.add_argument('--train_test', action='store_true', 
+                       help='Run testing after each training epoch')
     
     # Model arguments  
     parser.add_argument('--model_version', type=str, choices=['v1', 'v2'], 
@@ -185,13 +189,13 @@ def load_and_validate_config(args):
     return config, config_dict
 
 
-def setup_model_and_data(config, args):
-    """Setup model and data loaders."""
+def setup_model_and_data(config, args, mode='oracle', current_checkpoint=None):
+    """Setup model and data loaders with proper validation strategy."""
     # Create model
     model = create_model(config)
     
-    # Get data loaders
-    train_loader, val_loader, test_loader = get_dataloaders(config)
+    # Get data loaders with mode-specific validation
+    train_loader, val_loader, test_loader = get_dataloaders(config, mode=mode, current_checkpoint=current_checkpoint)
     
     return model, train_loader, val_loader, test_loader
 
@@ -231,7 +235,42 @@ def evaluate_model_checkpoint_based(config, args, trained_model=None):
     # Create model for evaluation
     try:
         from src.models.factory import create_model
-        model = create_model(config)
+        import contextlib
+        import sys
+        import io
+        import logging
+        
+        # Create a context manager to suppress verbose logs
+        @contextlib.contextmanager
+        def suppress_verbose_logs():
+            """Temporarily suppress verbose logging from external libraries."""
+            # Get loggers that produce verbose output
+            open_clip_logger = logging.getLogger('open_clip')
+            transformers_logger = logging.getLogger('transformers')
+            
+            # Store original levels
+            original_open_clip_level = open_clip_logger.level
+            original_transformers_level = transformers_logger.level
+            
+            # Set to WARNING to suppress INFO logs
+            open_clip_logger.setLevel(logging.WARNING)
+            transformers_logger.setLevel(logging.WARNING)
+            
+            # Temporarily redirect stdout to suppress print statements
+            old_stdout = sys.stdout
+            sys.stdout = buffer = io.StringIO()
+            
+            try:
+                yield
+            finally:
+                # Restore original settings
+                sys.stdout = old_stdout
+                open_clip_logger.setLevel(original_open_clip_level)
+                transformers_logger.setLevel(original_transformers_level)
+        
+        # Suppress verbose logs during model creation
+        with suppress_verbose_logs():
+            model = create_model(config)
         
         # Use trained model if provided
         if trained_model is not None:
@@ -421,10 +460,18 @@ def create_checkpoint_dataset(checkpoint_samples, class_names):
 def calculate_balanced_accuracy(predictions, labels, num_classes):
     """Calculate balanced accuracy as per ICICLE-Benchmark implementation."""
     import numpy as np
+    
+    # Convert to numpy arrays if they aren't already
+    predictions = np.array(predictions)
+    labels = np.array(labels)
+    
+    # Get unique classes that actually appear in the labels
+    unique_classes = np.unique(labels)
     acc_per_class = []
-    for i in range(num_classes):
-        mask = labels == i
-        if mask.sum() == 0:  # Skip classes with no samples
+    
+    for class_id in unique_classes:
+        mask = labels == class_id
+        if mask.sum() == 0:  # Skip classes with no samples (shouldn't happen with unique_classes)
             continue
         class_acc = (predictions[mask] == labels[mask]).mean()
         acc_per_class.append(class_acc)
@@ -433,11 +480,213 @@ def calculate_balanced_accuracy(predictions, labels, num_classes):
         return 0.0
     
     balanced_acc = np.array(acc_per_class).mean()
-    return balanced_acc
+    return float(balanced_acc)  # Ensure it's a Python float
+
+
+def evaluate_epoch(model, data_loader, criterion, device, mode_type="oracle"):
+    """
+    Evaluate model on validation or test data for one epoch.
+    
+    Args:
+        model: PyTorch model
+        data_loader: DataLoader for evaluation
+        criterion: Loss function
+        device: Device to run evaluation on
+        mode_type: Training mode ("oracle" or "accumulative")
+        
+    Returns:
+        Tuple of (loss, accuracy, balanced_accuracy, total_samples)
+    """
+    import torch
+    import numpy as np
+    
+    model.eval()
+    running_loss = 0.0
+    correct = 0
+    total = 0
+    all_predictions = []
+    all_labels = []
+    
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(data_loader):
+            images = batch['image'].to(device)
+            labels = batch['label'].to(device)
+            
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            
+            running_loss += loss.item()
+            _, predicted = outputs.max(1)
+            total += labels.size(0)
+            correct += predicted.eq(labels).sum().item()
+            
+            # Store for balanced accuracy calculation
+            all_predictions.extend(predicted.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            
+            # Clear intermediate tensors to save memory
+            del images, labels, outputs, predicted
+            
+            # Periodic memory cleanup during evaluation
+            if batch_idx % 10 == 0:  # Every 10 batches
+                torch.cuda.empty_cache()
+    
+    # Calculate metrics
+    avg_loss = running_loss / len(data_loader) if len(data_loader) > 0 else 0.0
+    accuracy = correct / total if total > 0 else 0.0
+    
+    # Calculate balanced accuracy
+    if len(all_predictions) > 0:
+        all_predictions = np.array(all_predictions)
+        all_labels = np.array(all_labels)
+        num_classes = len(np.unique(all_labels))
+        balanced_accuracy = calculate_balanced_accuracy(all_predictions, all_labels, num_classes)
+    else:
+        balanced_accuracy = 0.0
+    
+    # Aggressive memory cleanup after evaluation
+    del all_predictions, all_labels
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+    
+    return avg_loss, accuracy, balanced_accuracy, total
+
+
+def evaluate_oracle_per_checkpoint(model, config, criterion, device):
+    """
+    Evaluate Oracle model on EACH checkpoint's test data separately and return averaged results.
+    This differentiates Oracle (TEST*) from Accumulative (TEST+) testing strategies.
+    
+    Args:
+        model: Trained model
+        config: Configuration dictionary
+        criterion: Loss function  
+        device: Device to run evaluation on
+        
+    Returns:
+        Tuple of (avg_loss, avg_accuracy, avg_balanced_accuracy, total_samples)
+    """
+    import json
+    import torch
+    import torchvision.transforms as transforms
+    from torch.utils.data import DataLoader, Dataset
+    from PIL import Image
+    
+    # Define dataset class locally
+    class SimpleCameraTrapDataset(Dataset):
+        def __init__(self, samples, class_to_idx, transform=None):
+            self.samples = samples
+            self.class_to_idx = class_to_idx
+            self.transform = transform
+            
+        def __len__(self):
+            return len(self.samples)
+            
+        def __getitem__(self, idx):
+            sample = self.samples[idx]
+            
+            # Load actual image
+            try:
+                image = Image.open(sample['image_path']).convert('RGB')
+                
+                # Apply transforms
+                if self.transform:
+                    image = self.transform(image)
+                else:
+                    # Default transform if none provided
+                    default_transform = transforms.Compose([
+                        transforms.Resize((224, 224)),
+                        transforms.ToTensor(),
+                        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                    ])
+                    image = default_transform(image)
+                
+                # Get label
+                label = self.class_to_idx[sample['common']]
+                
+                return {'image': image, 'label': label}
+            except Exception as e:
+                print(f"Error loading image {sample['image_path']}: {e}")
+                # Return dummy data
+                dummy_image = torch.zeros(3, 224, 224)
+                return {'image': dummy_image, 'label': 0}
+    
+    # Load test data
+    data_config = config.get('data', {})
+    test_path = data_config.get('test_path')
+    
+    with open(test_path, 'r') as f:
+        test_data = json.load(f)
+    
+    # Get class mapping from config
+    class_names = config['data']['class_names']
+    class_to_idx = {name: idx for idx, name in enumerate(class_names)}
+    
+    # Define transforms
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    # Evaluate on each checkpoint separately
+    checkpoint_results = []
+    total_samples = 0
+    
+    model.eval()
+    with torch.no_grad():
+        for ckp_key, samples in test_data.items():
+            if not ckp_key.startswith('ckp_'):
+                continue
+                
+            # Create dataloader for this specific checkpoint
+            ckp_dataset = SimpleCameraTrapDataset(samples, class_to_idx, transform=transform)
+            ckp_loader = DataLoader(
+                ckp_dataset, 
+                batch_size=config.get('training', {}).get('eval_batch_size', 512),
+                shuffle=False,
+                num_workers=4,
+                pin_memory=True
+            )
+            
+            # Evaluate on this checkpoint
+            ckp_loss, ckp_acc, ckp_bal_acc, ckp_samples = evaluate_epoch(
+                model, ckp_loader, criterion, device, mode_type="oracle"
+            )
+            
+            checkpoint_results.append({
+                'checkpoint': ckp_key,
+                'loss': ckp_loss,
+                'accuracy': ckp_acc,
+                'balanced_accuracy': ckp_bal_acc,
+                'samples': ckp_samples
+            })
+            total_samples += ckp_samples
+    
+    # Calculate averages across all checkpoints
+    if checkpoint_results:
+        avg_loss = sum(r['loss'] for r in checkpoint_results) / len(checkpoint_results)
+        avg_accuracy = sum(r['accuracy'] for r in checkpoint_results) / len(checkpoint_results)
+        avg_balanced_accuracy = sum(r['balanced_accuracy'] for r in checkpoint_results) / len(checkpoint_results)
+        
+        # Log individual checkpoint results for transparency
+        logger = logging.getLogger()
+        logger.info(f"    Oracle per-checkpoint results:")
+        for r in checkpoint_results:
+            logger.info(f"      {r['checkpoint']}: Acc={r['accuracy']:.4f}, Bal.Acc={r['balanced_accuracy']:.4f}, Samples={r['samples']}")
+        logger.info(f"    Averaged across {len(checkpoint_results)} checkpoints")
+    else:
+        avg_loss = 0.0
+        avg_accuracy = 0.0 
+        avg_balanced_accuracy = 0.0
+        total_samples = 0
+    
+    return avg_loss, avg_accuracy, avg_balanced_accuracy, total_samples
 
 
 def train_model_oracle(config, args):
-    """Train the model in oracle mode - training on all available data."""
+    """Train the model in oracle mode - training on all available data with smart validation."""
     import torch
     import torch.nn as nn
     import torch.optim as optim
@@ -450,20 +699,30 @@ def train_model_oracle(config, args):
     # Setup device
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     
-    # Load training data
+    # Load training and test data for Oracle validation strategy
     data_config = config.get('data', {})
     train_path = data_config.get('train_path')
+    test_path = data_config.get('test_path')
     
     if not train_path or not Path(train_path).exists():
         logger.error(f"Training data path not found: {train_path}")
         return None
+        
+    if not test_path or not Path(test_path).exists():
+        logger.error(f"Test data path not found: {test_path}")
+        return None
     
     # Load checkpoint data
     train_data = load_checkpoint_data(train_path)
+    test_data = load_checkpoint_data(test_path)
     
-    # Extract class names from training data
+    # Extract class names from both training and test data
     all_classes = set()
     for ckp_key, samples in train_data.items():
+        if ckp_key.startswith('ckp_'):
+            for sample in samples:
+                all_classes.add(sample['common'])
+    for ckp_key, samples in test_data.items():
         if ckp_key.startswith('ckp_'):
             for sample in samples:
                 all_classes.add(sample['common'])
@@ -474,15 +733,113 @@ def train_model_oracle(config, args):
     logger.info(f"Found {num_classes} classes: {class_names}")
     
     # Update config with detected num_classes
-    config.update('model.num_classes', num_classes)
+    if 'model' not in config:
+        config['model'] = {}
+    config['model']['num_classes'] = num_classes
     
-    # Get all training samples (oracle mode uses all available data)
-    all_samples = []
-    for ckp_key, samples in train_data.items():
-        if ckp_key.startswith('ckp_'):
-            all_samples.extend(samples)
+    # Get train and validation data using Oracle validation strategy (2 samples per class)
+    model, train_loader, val_loader, test_loader = setup_model_and_data(
+        config, args, mode='oracle'
+    )
     
-    logger.info(f"Training on {len(all_samples)} total samples")
+    # Training setup
+    num_epochs = args.epochs if hasattr(args, 'epochs') and args.epochs else config.get('training.epochs', 30)
+    
+    logger.info(f"Training Oracle model for {num_epochs} epochs")
+    
+    # Log concise model summary
+    icicle_logger.log_model_summary("BioCLIP", num_classes)
+    
+    # Training
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.AdamW(
+        model.parameters(),
+        lr=config.get('training.learning_rate', 0.0001),
+        weight_decay=config.get('training.weight_decay', 0.0001)
+    )
+    
+    model.train()
+    for epoch in range(num_epochs):
+        running_loss = 0.0
+        correct = 0
+        total = 0
+        
+        for batch_idx, batch in enumerate(train_loader):
+            images = batch['image'].to(device)
+            labels = batch['label'].to(device)
+            
+            # Forward pass
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            
+            # Backward pass
+            loss.backward()
+            optimizer.step()
+            
+            # Statistics
+            running_loss += loss.item()
+            _, predicted = outputs.max(1)
+            total += labels.size(0)
+            correct += predicted.eq(labels).sum().item()
+        
+        train_loss = running_loss / len(train_loader)
+        train_acc = 100. * correct / total if total > 0 else 0
+        lr = optimizer.param_groups[0]['lr']
+        
+        # Log epoch results with clean format
+        icicle_logger.log_training_epoch(
+            epoch=epoch, 
+            phase="TRAIN", 
+            loss=train_loss, 
+            acc=train_acc/100, 
+            bal_acc=train_acc/100,  # Using same as acc for simplicity
+            lr=lr,
+            samples=total
+        )
+        
+        # Run validation if requested
+        if args.train_val and val_loader and len(val_loader) > 0:
+            val_loss, val_acc, val_bal_acc, val_samples = evaluate_epoch(
+                model, val_loader, criterion, device, mode_type="oracle"
+            )
+            icicle_logger.log_training_epoch(
+                epoch=epoch,
+                phase="VAL   ",
+                loss=val_loss,
+                acc=val_acc,
+                bal_acc=val_bal_acc,
+                lr=None,  # No LR for validation
+                samples=val_samples,
+                emoji="🔸"
+            )
+        
+        # Run testing if requested - Oracle tests on EACH checkpoint and averages
+        if args.train_test:
+            test_loss, test_acc, test_bal_acc, test_samples = evaluate_oracle_per_checkpoint(
+                model, config, criterion, device
+            )
+            icicle_logger.log_training_epoch(
+                epoch=epoch,
+                phase="TEST*",
+                loss=test_loss,
+                acc=test_acc,
+                bal_acc=test_bal_acc,
+                lr=None,  # No LR for testing
+                samples=test_samples,
+                emoji="🔻"
+            )
+    
+    # Log training completion
+    icicle_logger.log_training_completion("oracle")
+    
+    # Save model
+    model_path = 'oracle_model.pth'
+    torch.save(model.state_dict(), model_path)
+    logger.info(f"Model saved to {model_path}")
+    
+    logger.info("Oracle training completed!")
+    return model
     
     # Create dataset and dataloader
     train_dataset = create_checkpoint_dataset(all_samples, class_names)
@@ -508,11 +865,13 @@ def train_model_oracle(config, args):
     # Use command line epochs if provided
     num_epochs = args.epochs if hasattr(args, 'epochs') and args.epochs else config.get('training.epochs', 30)
     
-    # Log model save path
-    save_dir = "logs/models"
-    icicle_logger.log_model_info(f"Best model will be saved to {save_dir} with prefix \"oracle\"")
+    # Log training completion
+    icicle_logger.log_training_completion("oracle")
     
-    # Training loop
+    # Save model
+    model_path = 'best_model.pth'
+    torch.save(model.state_dict(), model_path)
+    icicle_logger.log_model_info(f"Model saved to {model_path}")    # Training loop
     model.train()
     for epoch in range(num_epochs):
         running_loss = 0.0
@@ -569,13 +928,17 @@ def train_model_oracle(config, args):
 
 
 def train_model_accumulative(config, args):
-    """Train the model in accumulative mode - progressive temporal training."""
+    """Train the model in accumulative mode - progressive temporal training with proper validation."""
     import torch
     import torch.nn as nn
     import torch.optim as optim
     import numpy as np
     from pathlib import Path
     from torch.utils.data import DataLoader
+    import contextlib
+    import sys
+    import io
+    import logging
     
     # Setup device
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
@@ -627,123 +990,279 @@ def train_model_accumulative(config, args):
         logger.error("No training checkpoints found in data")
         return None
     
+    # For accumulative training, we train up to ckp_16 (test on ckp_17)
+    # We can't train on ckp_17 because we need it for final testing
+    max_train_checkpoint = len(train_checkpoints) - 1  # Train up to ckp_16 (16 rounds)
+    
     # Training setup - use command line epochs if provided
-    num_epochs = args.epochs if hasattr(args, 'epochs') and args.epochs else config.get('training.epochs', 30)
-    
-    # For accumulative training, we'll train on the full dataset but log the process
-    # This is a simplified version - for full accumulative training, you'd train step by step
-    
-    # Collect all training samples
-    all_samples = []
-    for ckp_key in train_checkpoints:
-        checkpoint_samples = train_data[ckp_key]
-        all_samples.extend(checkpoint_samples)
+    num_epochs_per_checkpoint = args.epochs if hasattr(args, 'epochs') and args.epochs else config.get('training.epochs', 30)
     
     # Use the enhanced training header with all details
     icicle_logger.log_training_phase_header(
-        mode='accumulative', 
-        epochs=num_epochs,
+        mode='accumulative training (progressive)', 
+        epochs=num_epochs_per_checkpoint,
         num_classes=num_classes,
-        num_train_checkpoints=len(train_checkpoints),
+        num_train_checkpoints=max_train_checkpoint,  # Number of progressive training rounds
         num_test_checkpoints=len(test_checkpoints),
-        total_samples=len(all_samples)
+        total_samples=sum(len(train_data[ckp]) for ckp in train_checkpoints)
     )
     
-    # Log model save path
-    save_dir = "logs/models"
-    icicle_logger.log_model_info(f"Best model will be saved to {save_dir} with prefix \"accumulative\"")
-    
-    # Create dataset and dataloader
-    train_dataset = create_checkpoint_dataset(all_samples, class_names)
-    train_loader = DataLoader(
-        train_dataset, 
-        batch_size=config.get('training.batch_size', 32),
-        shuffle=True,
-        num_workers=config.get('training.num_workers', 4)
-    )
-    
-    # Create model (verbose output will be suppressed)
-    model = create_model(config)
-    
-    # Log concise model summary
-    icicle_logger.log_model_summary("BioCLIP", num_classes)
-    
-    # Calculate and log class distribution
-    class_distribution = {}
-    for sample in all_samples:
-        class_name = sample['common']
-        if class_name not in class_distribution:
-            class_distribution[class_name] = {'train': 0, 'val': 0}
-        class_distribution[class_name]['train'] += 1
-    
-    # Add some validation data (simplified for demo)
-    for class_name in class_distribution:
-        class_distribution[class_name]['val'] = max(1, class_distribution[class_name]['train'] // 100)
-    
-    icicle_logger.log_class_distribution(class_distribution)
-    
-    # Training
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(
-        model.parameters(),
-        lr=config.get('training.learning_rate', 0.0001),
-        weight_decay=config.get('training.weight_decay', 0.0001)
-    )
-    
-    model.train()
-    for epoch in range(num_epochs):
-        running_loss = 0.0
-        correct = 0
-        total = 0
+    # Create a context manager to suppress verbose logs during model creation
+    @contextlib.contextmanager
+    def suppress_verbose_logs():
+        """Temporarily suppress verbose logging from external libraries."""
+        # Get loggers that produce verbose output
+        open_clip_logger = logging.getLogger('open_clip')
+        transformers_logger = logging.getLogger('transformers')
         
-        for batch_idx, batch in enumerate(train_loader):
-            images = batch['image'].to(device)
-            labels = batch['label'].to(device)
-            
-            # Forward pass
-            optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            
-            # Backward pass
-            loss.backward()
-            optimizer.step()
-            
-            # Statistics
-            running_loss += loss.item()
-            _, predicted = outputs.max(1)
-            total += labels.size(0)
-            correct += predicted.eq(labels).sum().item()
+        # Store original levels
+        original_open_clip_level = open_clip_logger.level
+        original_transformers_level = transformers_logger.level
         
-        train_loss = running_loss / len(train_loader)
-        train_acc = 100. * correct / total if total > 0 else 0
-        lr = optimizer.param_groups[0]['lr']
+        # Set to WARNING to suppress INFO logs
+        open_clip_logger.setLevel(logging.WARNING)
+        transformers_logger.setLevel(logging.WARNING)
         
-        # Log epoch results with clean format
-        icicle_logger.log_training_epoch(
-            epoch=epoch, 
-            phase="TRAIN", 
-            loss=train_loss, 
-            acc=train_acc/100, 
-            bal_acc=train_acc/100,  # Using same as acc for simplicity
-            lr=lr,
-            samples=total
+        # Temporarily redirect stdout to suppress print statements
+        old_stdout = sys.stdout
+        sys.stdout = buffer = io.StringIO()
+        
+        try:
+            yield
+        finally:
+            # Restore original settings
+            sys.stdout = old_stdout
+            open_clip_logger.setLevel(original_open_clip_level)
+            transformers_logger.setLevel(original_transformers_level)
+    
+    final_model = None
+    
+    # Progressive training from ckp_1 to ckp_16
+    for checkpoint_round in range(1, max_train_checkpoint + 1):
+        current_train_checkpoint = f'ckp_{checkpoint_round}'
+        current_test_checkpoint = f'ckp_{checkpoint_round + 1}'  # Test on next checkpoint
+        
+        logger.info(f"\nRound {checkpoint_round} - ({checkpoint_round}/{max_train_checkpoint})")
+        logger.info(f"    Training: ckp_1 → {current_train_checkpoint} | Validation: {current_train_checkpoint} | Test: {current_test_checkpoint}")
+        
+        # Create fresh BioCLIP model for each round (this ensures fresh weights from pre-trained)
+        with suppress_verbose_logs():
+            model = create_model(config)
+        model = model.to(device)
+        
+        # Get data loaders only (we already have the fresh model)
+        train_loader, val_loader, _ = get_dataloaders(
+            config, mode='accumulative', current_checkpoint=current_train_checkpoint
         )
         
-        # Add separator between epochs
-        if epoch < num_epochs - 1:
-            icicle_logger.log_training_separator()
+        # Get test loader for next checkpoint specifically
+        next_checkpoint_test_samples = test_data.get(current_test_checkpoint, [])
+        if next_checkpoint_test_samples:
+            # Import required classes and create mappings
+            from torch.utils.data import Dataset, DataLoader
+            import torchvision.transforms as transforms
+            from PIL import Image
+            
+            # Create class mapping
+            class_to_idx = {name: idx for idx, name in enumerate(class_names)}
+            
+            # Create transform
+            transform = transforms.Compose([
+                transforms.Resize((224, 224)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            ])
+            
+            # Define dataset class locally
+            class NextCheckpointDataset(Dataset):
+                def __init__(self, samples, class_to_idx, transform=None):
+                    self.samples = samples
+                    self.class_to_idx = class_to_idx
+                    self.transform = transform
+                    
+                def __len__(self):
+                    return len(self.samples)
+                    
+                def __getitem__(self, idx):
+                    import torch
+                    sample = self.samples[idx]
+                    
+                    try:
+                        image_path = sample['image_path']
+                        image = Image.open(image_path).convert('RGB')
+                        image = self.transform(image)
+                    except Exception as e:
+                        logger.warning(f"Could not load image {sample.get('image_path', 'unknown')}: {e}")
+                        image = torch.randn(3, 224, 224)
+                    
+                    label = self.class_to_idx[sample['common']]
+                    
+                    return {
+                        'image': image,
+                        'label': label,
+                        'image_path': sample.get('image_path', ''),
+                        'common_name': sample['common']
+                    }
+            
+            # Create test dataset for next checkpoint
+            next_test_dataset = NextCheckpointDataset(next_checkpoint_test_samples, class_to_idx, transform)
+            test_loader = DataLoader(
+                next_test_dataset,
+                batch_size=8,  # Small batch for memory efficiency
+                shuffle=False,
+                num_workers=0,
+                pin_memory=False
+            )
+        else:
+            test_loader = None
+        
+        # Log concise model summary only for first round
+        if checkpoint_round == 1:
+            icicle_logger.log_model_summary("BioCLIP", num_classes)
+        
+        # Training setup
+        criterion = nn.CrossEntropyLoss()
+        optimizer = optim.AdamW(
+            model.parameters(),
+            lr=config.get('training.learning_rate', 0.0001),
+            weight_decay=config.get('training.weight_decay', 0.0001)
+        )
+        
+        # Train for specified epochs
+        model.train()
+        for epoch in range(num_epochs_per_checkpoint):
+            running_loss = 0.0
+            correct = 0
+            total = 0
+            
+            for batch_idx, batch in enumerate(train_loader):
+                images = batch['image'].to(device)
+                labels = batch['label'].to(device)
+                
+                # Forward pass
+                optimizer.zero_grad()
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+                
+                # Backward pass
+                loss.backward()
+                optimizer.step()
+                
+                # Statistics
+                running_loss += loss.item()
+                _, predicted = outputs.max(1)
+                total += labels.size(0)
+                correct += predicted.eq(labels).sum().item()
+            
+            train_loss = running_loss / len(train_loader)
+            train_acc = 100. * correct / total if total > 0 else 0
+            lr = optimizer.param_groups[0]['lr']
+            
+            # Log epoch results with clean format (indented to match the round structure)
+            print(f"    🔹 Epoch {epoch:2d} [TRAIN] Loss: {train_loss:.4f} | Acc: {train_acc/100:.4f} | Bal.Acc: {train_acc/100:.4f} | LR: {lr:.8f} | Samples: {total}")
+            
+            # Run validation if requested (on the validation data for this round)
+            if args.train_val and val_loader and len(val_loader) > 0:
+                val_loss, val_acc, val_bal_acc, val_samples = evaluate_epoch(
+                    model, val_loader, criterion, device, mode_type="accumulative"
+                )
+                print(f"    🔸 Epoch {epoch:2d} [  VAL] Loss: {val_loss:.4f} | Acc: {val_acc:.4f} | Bal.Acc: {val_bal_acc:.4f} | Samples: {val_samples}")
+            
+            # Run testing if requested (on the full test set)
+            if args.train_test and test_loader and len(test_loader) > 0:
+                test_loss, test_acc, test_bal_acc, test_samples = evaluate_epoch(
+                    model, test_loader, criterion, device, mode_type="accumulative"
+                )
+                print(f"    🔻 Epoch {epoch:2d} [TEST+] Loss: {test_loss:.4f} | Acc: {test_acc:.4f} | Bal.Acc: {test_bal_acc:.4f} | Samples: {test_samples}")
+        
+        # Evaluate on validation set (current checkpoint's test data)
+        if val_loader and len(val_loader) > 0:
+            model.eval()
+            val_correct = 0
+            val_total = 0
+            val_loss = 0.0
+            
+            with torch.no_grad():
+                for batch in val_loader:
+                    images = batch['image'].to(device)
+                    labels = batch['label'].to(device)
+                    
+                    outputs = model(images)
+                    loss = criterion(outputs, labels)
+                    
+                    val_loss += loss.item()
+                    _, predicted = outputs.max(1)
+                    val_total += labels.size(0)
+                    val_correct += predicted.eq(labels).sum().item()
+            
+            val_acc = 100. * val_correct / val_total if val_total > 0 else 0
+            # Only log if not already logged during training epochs
+            if not args.train_val:
+                logger.info(f"    📊 Round {checkpoint_round} Validation → {current_train_checkpoint}: "
+                           f"Acc: {val_acc:.2f}% ({val_correct}/{val_total})")
+        
+        # Evaluate on test set (next checkpoint's test data) 
+        if test_loader and len(test_loader) > 0:
+            model.eval()
+            test_correct = 0
+            test_total = 0
+            test_loss = 0.0
+            
+            with torch.no_grad():
+                for batch in test_loader:
+                    images = batch['image'].to(device)
+                    labels = batch['label'].to(device)
+                    
+                    outputs = model(images)
+                    loss = criterion(outputs, labels)
+                    
+                    test_loss += loss.item()
+                    _, predicted = outputs.max(1)
+                    test_total += labels.size(0)
+                    test_correct += predicted.eq(labels).sum().item()
+            
+            test_acc = 100. * test_correct / test_total if test_total > 0 else 0
+            # Only log final test result if not already logged during training epochs
+            if not args.train_test:
+                logger.info(f"    📊 Round {checkpoint_round} Test → {current_test_checkpoint}: "
+                           f"Acc: {test_acc:.2f}% ({test_correct}/{test_total})")
+            else:
+                # Just log the final test result more concisely when train_test is enabled
+                logger.info(f"    📊 Round {checkpoint_round} Test → {current_test_checkpoint}: Acc: {test_acc:.2f}% ({test_correct}/{test_total})")
+        
+        # GPU Memory cleanup after each round to prevent memory leaks
+        if checkpoint_round < max_train_checkpoint:  # Don't delete final model
+            # Delete model and optimizer explicitly
+            del model
+            del optimizer
+            del criterion
+            
+            # Clear any cached tensors
+            torch.cuda.empty_cache()
+            
+            # Force garbage collection
+            import gc
+            gc.collect()
+            
+            # Additional CUDA memory cleanup
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+            
+            print(f"    ✅ Round {checkpoint_round} completed\n")
+        
+        # Save the final trained model (last round)
+        if checkpoint_round == max_train_checkpoint:
+            final_model = model
+            model_path = 'accumulative_model.pth'
+            torch.save(model.state_dict(), model_path)
+            logger.info(f"💾 Final model saved to {model_path}")
     
     # Log training completion
-    icicle_logger.log_training_completion("accumulative")
+    icicle_logger.log_training_completion(f"accumulative ({max_train_checkpoint} rounds)")
     
-    # Save model
-    model_path = 'accumulative_model.pth'
-    torch.save(model.state_dict(), model_path)
-    logger.info(f"Model saved to {model_path}")
-    
-    logger.info("Accumulative training completed!")
-    return model
+    print(f"🎉 Accumulative training completed! ({max_train_checkpoint} rounds)")
+    return final_model
 
 
 def main():
@@ -766,18 +1285,7 @@ def main():
         train_path = config_dict['data']['train_path']
         test_path = config_dict['data']['test_path']
         
-        # Use the new structured initial setup logging
-        icicle_logger.log_initial_setup(
-            experiment_dir=log_dir,
-            log_file=f"{log_dir}/log.log",
-            seed=args.seed,
-            camera=args.camera,
-            num_checkpoints=len(checkpoints),
-            train_path=train_path,
-            test_path=test_path
-        )
-        
-        # ========== PHASE 1: SETUP DETAILS ==========
+        # ========== PHASE 1: SETUP DETAILS (merged with initial setup) ==========
         model_info = {
             'name': 'BioCLIP',
             'source': 'loaded from pre-trained (original)',
@@ -788,7 +1296,10 @@ def main():
             camera=args.camera,
             log_location=log_dir,
             model_info=model_info,
-            config_dict=config_dict
+            config_dict=config_dict,
+            num_checkpoints=len(checkpoints),
+            train_path=train_path,
+            test_path=test_path
         )
         
         # ========== PHASE 2: DATASET PREPARATION ==========
@@ -804,10 +1315,12 @@ def main():
         train_data = load_checkpoint_data_local(config_dict['data']['train_path'])
         test_data = load_checkpoint_data_local(config_dict['data']['test_path'])
         
-        # Extract class information
+        # Extract class information for dataset overview
         all_classes = set()
         train_samples_per_class = {}
+        test_samples_per_class = {}
         total_train_samples = 0
+        total_test_samples = 0
         
         for ckp_key, samples in train_data.items():
             if ckp_key.startswith('ckp_'):
@@ -819,20 +1332,25 @@ def main():
                     train_samples_per_class[class_name] += 1
                     total_train_samples += 1
         
-        # Calculate test samples
-        total_test_samples = 0
+        # Calculate test samples per class
         for ckp_key, samples in test_data.items():
             if ckp_key.startswith('ckp_'):
-                total_test_samples += len(samples)
+                for sample in samples:
+                    class_name = sample['common']
+                    all_classes.add(class_name)
+                    if class_name not in test_samples_per_class:
+                        test_samples_per_class[class_name] = 0
+                    test_samples_per_class[class_name] += 1
+                    total_test_samples += 1
         
-        # Build class distribution
-        class_distribution = {}
+        # Build simple class distribution for overview (Train/Test only)
+        class_distribution_overview = {}
         for class_name in sorted(all_classes):
             train_count = train_samples_per_class.get(class_name, 0)
-            val_count = max(1, train_count // 100)  # Simple validation split estimate
-            class_distribution[class_name] = {
+            test_count = test_samples_per_class.get(class_name, 0)
+            class_distribution_overview[class_name] = {
                 'train': train_count,
-                'val': val_count
+                'test': test_count
             }
         
         # Get checkpoint information
@@ -845,7 +1363,7 @@ def main():
             test_size=total_test_samples,
             num_checkpoints=num_checkpoints,
             num_classes=len(all_classes),
-            class_distribution=class_distribution,
+            class_distribution=class_distribution_overview,
             checkpoint_list=test_checkpoints
         )
         

@@ -157,6 +157,38 @@ def create_model(config_dict):
         PyTorch model
     """
     import logging
+    import contextlib
+    import sys
+    import io
+    
+    # Create a context manager to suppress verbose logs
+    @contextlib.contextmanager
+    def suppress_verbose_logs():
+        """Temporarily suppress verbose logging from external libraries."""
+        # Get loggers that produce verbose output
+        open_clip_logger = logging.getLogger('open_clip')
+        transformers_logger = logging.getLogger('transformers')
+        
+        # Store original levels
+        original_open_clip_level = open_clip_logger.level
+        original_transformers_level = transformers_logger.level
+        
+        # Set to WARNING to suppress INFO logs
+        open_clip_logger.setLevel(logging.WARNING)
+        transformers_logger.setLevel(logging.WARNING)
+        
+        # Temporarily redirect stdout to suppress print statements
+        old_stdout = sys.stdout
+        sys.stdout = buffer = io.StringIO()
+        
+        try:
+            yield
+        finally:
+            # Restore original settings
+            sys.stdout = old_stdout
+            open_clip_logger.setLevel(original_open_clip_level)
+            transformers_logger.setLevel(original_transformers_level)
+    
     logger = logging.getLogger(__name__)
     
     model_config = config_dict['model']
@@ -190,18 +222,15 @@ def create_model(config_dict):
                 'ICICLE-Benchmark/pretrained_weight/bioclip-2/open_clip_pytorch_model.bin',
                 'ICICLE-Benchmark/pretrained_weight/bioclip-2/open_clip_model.safetensors'
             ]
-            logger.info("Looking for BioCLIP v2 weights...")
         else:  # v1 (default)
             bioclip_weight_paths = [
                 'pretrained_weight/bioclip/open_clip_pytorch_model.bin',
                 'ICICLE-Benchmark/pretrained_weight/bioclip/open_clip_pytorch_model.bin'
             ]
-            logger.info("Looking for BioCLIP v1 weights...")
         
         for path in bioclip_weight_paths:
             if os.path.exists(path):
                 pretrained_path = path
-                logger.info(f"Found BioCLIP {model_version} weights at: {path}")
                 break
         
         if pretrained_path is None:
@@ -213,14 +242,16 @@ def create_model(config_dict):
             model = PlaceholderModel(num_classes)
         else:
             try:
-                model = create_bioclip_model(
-                    num_classes=num_classes,
-                    class_names=class_names,
-                    pretrained_path=pretrained_path,
-                    version=model_version,
-                    device='cuda' if torch.cuda.is_available() else 'cpu'
-                )
-                logger.info(f"Created BioCLIP {model_version} model with {num_classes} classes")
+                # Suppress verbose logs during model creation
+                with suppress_verbose_logs():
+                    model = create_bioclip_model(
+                        num_classes=num_classes,
+                        class_names=class_names,
+                        pretrained_path=pretrained_path,
+                        version=model_version,
+                        device='cuda' if torch.cuda.is_available() else 'cpu'
+                    )
+                logger.info(f"🤖 Created BioCLIP model ({num_classes} classes)")
                 
             except Exception as e:
                 logger.error(f"Failed to create BioCLIP {model_version} model: {e}")

@@ -344,8 +344,55 @@ def create_bioclip_model(num_classes: int, class_names: List[str],
         BioCLIPClassifier instance
     """
     try:
-        # Try to import open_clip (BioCLIP uses this)
-        from open_clip import create_model_and_transforms
+        # Create a context manager to suppress verbose logs at import time
+        import contextlib
+        import sys
+        import io
+        import logging
+        import warnings
+        
+        @contextlib.contextmanager
+        def suppress_verbose_logs():
+            """Completely suppress verbose logging and output from external libraries."""
+            # Get loggers that produce verbose output
+            open_clip_logger = logging.getLogger('open_clip')
+            transformers_logger = logging.getLogger('transformers')
+            root_logger = logging.getLogger()
+            
+            # Store original levels
+            original_open_clip_level = open_clip_logger.level
+            original_transformers_level = transformers_logger.level
+            original_root_level = root_logger.level
+            
+            # Set to ERROR to suppress all INFO, WARNING logs
+            open_clip_logger.setLevel(logging.ERROR)
+            transformers_logger.setLevel(logging.ERROR)
+            root_logger.setLevel(logging.ERROR)
+            
+            # Temporarily redirect stdout and stderr to suppress all print statements
+            old_stdout = sys.stdout
+            old_stderr = sys.stderr
+            sys.stdout = io.StringIO()
+            sys.stderr = io.StringIO()
+            
+            # Suppress warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                
+                try:
+                    yield
+                finally:
+                    # Restore original settings
+                    sys.stdout = old_stdout
+                    sys.stderr = old_stderr
+                    open_clip_logger.setLevel(original_open_clip_level)
+                    transformers_logger.setLevel(original_transformers_level)
+                    root_logger.setLevel(original_root_level)
+        
+        # Suppress verbose logs during import
+        with suppress_verbose_logs():
+            # Try to import open_clip (BioCLIP uses this)
+            from open_clip import create_model_and_transforms
         logger.info("Using open_clip for BioCLIP model creation")
     except ImportError:
         logger.warning("open_clip not available, falling back to placeholder model")
@@ -392,33 +439,35 @@ def create_bioclip_model(num_classes: int, class_names: List[str],
     if pretrained_path and os.path.exists(pretrained_path):
         logger.info(f"Loading BioCLIP {version} from local weights: {pretrained_path}")
         try:
-            # Special handling for BioCLIP v2
-            if version == 'v2':
-                # Try with specific settings for BioCLIP v2
-                model, preprocess_train, preprocess_val = create_model_and_transforms(
-                    model_name,
-                    pretrained_path,
-                    precision=precision,
-                    device=device,
-                    jit=False,
-                    force_quick_gelu=False,
-                    force_custom_text=False,
-                    force_image_size=force_image_size,
-                    pretrained_image=False,  # Don't load pretrained image weights
-                    output_dict=True,
-                )
-            else:
-                # BioCLIP v1 with original settings
-                model, preprocess_train, preprocess_val = create_model_and_transforms(
-                    model_name,
-                    pretrained_path,
-                    precision=precision,
-                    device=device,
-                    jit=False,
-                    force_quick_gelu=False,
-                    force_custom_text=False,
-                    output_dict=True,
-                )
+            # Suppress verbose logs during model creation
+            with suppress_verbose_logs():
+                # Special handling for BioCLIP v2
+                if version == 'v2':
+                    # Try with specific settings for BioCLIP v2
+                    model, preprocess_train, preprocess_val = create_model_and_transforms(
+                        model_name,
+                        pretrained_path,
+                        precision=precision,
+                        device=device,
+                        jit=False,
+                        force_quick_gelu=False,
+                        force_custom_text=False,
+                        force_image_size=force_image_size,
+                        pretrained_image=False,  # Don't load pretrained image weights
+                        output_dict=True,
+                    )
+                else:
+                    # BioCLIP v1 with original settings
+                    model, preprocess_train, preprocess_val = create_model_and_transforms(
+                        model_name,
+                        pretrained_path,
+                        precision=precision,
+                        device=device,
+                        jit=False,
+                        force_quick_gelu=False,
+                        force_custom_text=False,
+                        output_dict=True,
+                    )
             
             # Load tokenizer from same directory
             tokenizer_path = os.path.dirname(pretrained_path)

@@ -165,23 +165,47 @@ def validate_config(config: Dict[str, Any]) -> bool:
 
 def get_mode_type(config_path: str) -> str:
     """
-    Extract mode type from config path.
+    Extract mode type from config content (experiment.mode field).
+    Falls back to filename parsing if mode is not specified in config.
     
     Args:
         config_path: Path to configuration file
         
     Returns:
-        Mode type string
+        Mode type string ('oracle', 'accumulative', 'zs')
     """
-    path = Path(config_path)
+    import yaml
+    from pathlib import Path
     
+    try:
+        # First, try to read mode from config content
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        
+        # Check if experiment.mode is specified
+        if 'experiment' in config and 'mode' in config['experiment']:
+            mode = config['experiment']['mode']
+            # Validate mode
+            valid_modes = ['oracle', 'accumulative', 'zs']
+            if mode in valid_modes:
+                return mode
+            else:
+                logger.warning(f"Invalid mode '{mode}' in config. Valid modes: {valid_modes}")
+        
+    except Exception as e:
+        logger.warning(f"Could not read mode from config {config_path}: {e}")
+    
+    # Fallback to filename-based detection
+    path = Path(config_path)
     mode_mapping = {
         'zs.yaml': 'zs',
         'oracle.yaml': 'oracle', 
         'accumulative.yaml': 'accumulative'
     }
     
-    return mode_mapping.get(path.name, path.stem)
+    detected_mode = mode_mapping.get(path.name, path.stem)
+    logger.info(f"Using filename-based mode detection: {detected_mode}")
+    return detected_mode
 
 
 def create_experiment_config(base_config: Dict[str, Any], 

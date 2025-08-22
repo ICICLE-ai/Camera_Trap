@@ -151,12 +151,132 @@ class DatasetManager:
             collate_fn=None  # Use default collate_fn for now
         )
 
-def get_dataloaders(config_dict):
+def get_oracle_validation_samples(train_data, test_data, all_classes):
     """
-    Create train, validation, and test dataloaders from config.
+    Create validation samples for Oracle mode by selecting 2 random images per class from training data.
+    Smart fallback strategies for classes with insufficient samples.
+    
+    Args:
+        train_data: Training data dictionary
+        test_data: Test data dictionary  
+        all_classes: Set of all class names
+        
+    Returns:
+        Tuple of (train_samples, val_samples) where val_samples are removed from train_samples
+    """
+    import random
+    from collections import defaultdict
+    
+    # Collect all training samples
+    all_train_samples = []
+    for ckp_key, samples in train_data.items():
+        if ckp_key.startswith('ckp_'):
+            all_train_samples.extend(samples)
+    
+    # Group training samples by class
+    train_samples_by_class = defaultdict(list)
+    for sample in all_train_samples:
+        train_samples_by_class[sample['common']].append(sample)
+    
+    # Group test samples by class (for fallback)
+    test_samples_by_class = defaultdict(list)
+    for ckp_key, samples in test_data.items():
+        if ckp_key.startswith('ckp_'):
+            for sample in samples:
+                test_samples_by_class[sample['common']].append(sample)
+    
+    val_samples = []
+    train_samples_final = []
+    val_samples_selected = set()  # Track selected sample IDs to avoid duplicates
+    
+    logger.info("🔄 Creating Oracle validation set (2 samples per class)")
+    
+    for class_name in sorted(all_classes):
+        train_class_samples = train_samples_by_class[class_name]
+        test_class_samples = test_samples_by_class[class_name]
+        
+        selected_for_val = []
+        
+        if len(train_class_samples) >= 2:
+            # Strategy 1: Select 2 random from training data
+            selected_for_val = random.sample(train_class_samples, 2)
+            logger.debug(f"   {class_name}: Selected 2 from {len(train_class_samples)} training samples")
+            
+        elif len(train_class_samples) == 1:
+            # Strategy 2: Use the 1 training sample + 1 from test if available
+            selected_for_val.append(train_class_samples[0])
+            if test_class_samples:
+                selected_for_val.append(random.choice(test_class_samples))
+                logger.debug(f"   {class_name}: Used 1 train + 1 test sample")
+            else:
+                logger.debug(f"   {class_name}: Only 1 sample available, using it for validation")
+                
+        elif len(train_class_samples) == 0:
+            # Strategy 3: No training samples, use test samples if available
+            if len(test_class_samples) >= 2:
+                selected_for_val = random.sample(test_class_samples, 2)
+                logger.debug(f"   {class_name}: No training samples, used 2 from test")
+            elif len(test_class_samples) == 1:
+                selected_for_val = test_class_samples
+                logger.debug(f"   {class_name}: No training samples, used 1 from test")
+            else:
+                logger.warning(f"   {class_name}: No samples available for validation - skipping")
+                continue
+        
+        # Add selected samples to validation set
+        for sample in selected_for_val:
+            sample_id = f"{sample['image_path']}_{sample['common']}"
+            if sample_id not in val_samples_selected:
+                val_samples.append(sample)
+                val_samples_selected.add(sample_id)
+    
+    # Add remaining training samples (not selected for validation) to final training set
+    for sample in all_train_samples:
+        sample_id = f"{sample['image_path']}_{sample['common']}"
+        if sample_id not in val_samples_selected:
+            train_samples_final.append(sample)
+    
+    logger.info(f"📊 Oracle validation: {len(val_samples)} validation samples, {len(train_samples_final)} training samples")
+    return train_samples_final, val_samples
+
+
+def get_accumulative_validation_samples(train_data, test_data, current_checkpoint):
+    """
+    Create validation samples for Accumulative mode using current checkpoint's test data.
+    
+    Args:
+        train_data: Training data dictionary
+        test_data: Test data dictionary
+        current_checkpoint: Current checkpoint key (e.g., 'ckp_4')
+        
+    Returns:
+        Tuple of (train_samples, val_samples) where val_samples come from CURRENT checkpoint test
+    """
+    # Collect training samples up to current checkpoint (accumulative)
+    train_samples = []
+    current_ckp_num = int(current_checkpoint.split('_')[1])
+    
+    for ckp_key, samples in train_data.items():
+        if ckp_key.startswith('ckp_'):
+            ckp_num = int(ckp_key.split('_')[1])
+            if ckp_num <= current_ckp_num:
+                train_samples.extend(samples)
+    
+    # For accumulative training, validation uses CURRENT checkpoint's test data
+    val_samples = test_data.get(current_checkpoint, [])
+    
+    # Silent logging - no output here
+    return train_samples, val_samples
+
+
+def get_dataloaders(config_dict, mode='oracle', current_checkpoint=None):
+    """
+    Create train, validation, and test dataloaders from config with smart validation strategies.
     
     Args:
         config_dict: Configuration dictionary
+        mode: Training mode ('oracle', 'accumulative', or 'zs')
+        current_checkpoint: Current checkpoint for accumulative mode (e.g., 'ckp_4')
         
     Returns:
         Tuple of (train_loader, val_loader, test_loader, class_names)
@@ -165,6 +285,10 @@ def get_dataloaders(config_dict):
     from torch.utils.data import DataLoader, Dataset
     from PIL import Image
     import torchvision.transforms as transforms
+    import random
+    
+    # Set random seed for reproducible validation splits
+    random.seed(42)
     
     # Load JSON data
     data_config = config_dict['data']
@@ -179,50 +303,51 @@ def get_dataloaders(config_dict):
     with open(test_path, 'r') as f:
         test_data = json.load(f)
     
-    # Extract samples from all checkpoints for training
-    all_train_samples = []
+    # Extract all classes from both training and test data
     all_classes = set()
-    
     for ckp_key, samples in train_data.items():
         if ckp_key.startswith('ckp_'):
-            all_train_samples.extend(samples)
-            for sample in samples:
-                all_classes.add(sample['common'])  # Use common name as class
-    
-    # Extract samples from all checkpoints for testing
-    all_test_samples = []
-    for ckp_key, samples in test_data.items():
-        if ckp_key.startswith('ckp_'):
-            all_test_samples.extend(samples)
             for sample in samples:
                 all_classes.add(sample['common'])
     
+    for ckp_key, samples in test_data.items():
+        if ckp_key.startswith('ckp_'):
+            for sample in samples:
+                all_classes.add(sample['common'])
+
     # Create class mapping
     class_names = sorted(list(all_classes))
     class_to_idx = {name: idx for idx, name in enumerate(class_names)}
-    
-    logger.info(f"Classes found: {len(class_names)}")
-    logger.info(f"Class names: {class_names}")
     
     # Store class names in config for model creation
     config_dict['data']['class_names'] = class_names
     config_dict['model']['num_classes'] = len(class_names)
     
-    # Split train data into train/val
-    from sklearn.model_selection import train_test_split
-    train_samples, val_samples = train_test_split(
-        all_train_samples, 
-        test_size=data_config.get('val_split', 0.2),
-        random_state=42,
-        stratify=[s['common'] for s in all_train_samples]
-    )
+    # Get train and validation samples based on mode
+    if mode == 'oracle':
+        # Oracle mode: Smart random selection from training data
+        train_samples, val_samples = get_oracle_validation_samples(train_data, test_data, all_classes)
+    elif mode == 'accumulative':
+        # Accumulative mode: Use current checkpoint's test data for validation
+        if current_checkpoint is None:
+            logger.warning("No current_checkpoint provided for accumulative mode, defaulting to ckp_1")
+            current_checkpoint = 'ckp_1'
+        train_samples, val_samples = get_accumulative_validation_samples(train_data, test_data, current_checkpoint)
+    else:
+        # Zero-shot mode: No training, use all data for testing
+        train_samples = []
+        val_samples = []
     
-    print(f"Classes found: {len(class_names)}")
-    print(f"Train samples: {len(train_samples)}")
-    print(f"Val samples: {len(val_samples)}")  
-    print(f"Test samples: {len(all_test_samples)}")
+    # Extract all test samples for final evaluation
+    all_test_samples = []
+    for ckp_key, samples in test_data.items():
+        if ckp_key.startswith('ckp_'):
+            all_test_samples.extend(samples)
     
-    # Create datasets
+    print(f"    Classes found: {len(class_names)}")
+    print(f"    Train samples: {len(train_samples)}")
+    print(f"    Val samples: {len(val_samples)}")  
+    print(f"    Test samples: {len(all_test_samples)}")    # Create datasets
     class SimpleCameraTrapDataset(Dataset):
         def __init__(self, samples, class_to_idx, transform=None):
             self.samples = samples
@@ -280,11 +405,14 @@ def get_dataloaders(config_dict):
     val_dataset = SimpleCameraTrapDataset(val_samples, class_to_idx, transform)
     test_dataset = SimpleCameraTrapDataset(all_test_samples, class_to_idx, transform)
     
-    # Create dataloaders
-    training_config = config_dict['training']
+    # Create dataloaders with smaller batch sizes to avoid OOM
+    training_config = config_dict.get('training', {})
+    train_batch_size = training_config.get('train_batch_size', training_config.get('batch_size', 16))  # Reduced default
+    eval_batch_size = training_config.get('eval_batch_size', 8)  # Further reduced for memory efficiency
+    
     train_loader = DataLoader(
         train_dataset,
-        batch_size=training_config['batch_size'],
+        batch_size=train_batch_size,
         shuffle=True,
         num_workers=0,  # Set to 0 for debugging
         pin_memory=False  # Disable for debugging
@@ -292,7 +420,7 @@ def get_dataloaders(config_dict):
     
     val_loader = DataLoader(
         val_dataset,
-        batch_size=training_config.get('eval_batch_size', training_config['batch_size']),
+        batch_size=eval_batch_size,
         shuffle=False,
         num_workers=0,  # Set to 0 for debugging
         pin_memory=False  # Disable for debugging
@@ -300,7 +428,7 @@ def get_dataloaders(config_dict):
     
     test_loader = DataLoader(
         test_dataset,
-        batch_size=training_config.get('eval_batch_size', training_config['batch_size']),
+        batch_size=eval_batch_size,
         shuffle=False,
         num_workers=0,  # Set to 0 for debugging  
         pin_memory=False  # Disable for debugging
