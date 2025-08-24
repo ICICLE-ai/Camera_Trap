@@ -251,7 +251,6 @@ def create_model(config_dict):
                         version=model_version,
                         device='cuda' if torch.cuda.is_available() else 'cpu'
                     )
-                logger.info(f"🤖 Created BioCLIP model ({num_classes} classes)")
                 
             except Exception as e:
                 logger.error(f"Failed to create BioCLIP {model_version} model: {e}")

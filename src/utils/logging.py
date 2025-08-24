@@ -677,6 +677,70 @@ class ICICLELogger:
         total_val_percent = (total_val / total_train * 100) if total_train > 0 else 0
         logger.info(f"ℹ️  TOTAL                {total_train:<8} {total_val:<8} {total_val_percent:<7.1f} %")
     
+    def log_accumulative_round_distribution(self, checkpoint_round: int, class_distribution: dict):
+        """Log per-class distribution for accumulative training round with Train/Val/Test columns."""
+        logger = logging.getLogger()
+        
+        logger.info(f"ℹ️  📋 Round {checkpoint_round} - Per-class distribution:")
+        logger.info("ℹ️  Class                Train    Val      Test    ")
+        logger.info("ℹ️  " + "─" * 48)
+        
+        total_train = 0
+        total_val = 0
+        total_test = 0
+        
+        # Sort classes by training count (descending)
+        sorted_classes = sorted(class_distribution.items(), 
+                              key=lambda x: x[1].get('train', 0), reverse=True)
+        
+        for class_name, stats in sorted_classes:
+            train_count = stats.get('train', 0)
+            val_count = stats.get('val', 0)
+            test_count = stats.get('test', 0)
+            
+            total_train += train_count
+            total_val += val_count
+            total_test += test_count
+            
+            # Truncate class name if too long
+            display_name = class_name[:20] if len(class_name) <= 20 else class_name[:17] + "..."
+            
+            logger.info(f"ℹ️  {display_name:<20} {train_count:<8} {val_count:<8} {test_count:<8}")
+        
+        logger.info("ℹ️  " + "─" * 48)
+        logger.info(f"ℹ️  TOTAL                {total_train:<8} {total_val:<8} {total_test:<8}")
+
+    def log_oracle_class_distribution(self, class_distribution: dict):
+        """Log per-class distribution for Oracle training showing Train/Val/Test with plain numbers."""
+        logger = logging.getLogger()
+        
+        logger.info("ℹ️  📋 Per-class distribution:")
+        logger.info("ℹ️  Class                Train    Val      Test    ")
+        logger.info("ℹ️  " + "─" * 48)
+        
+        total_train = 0
+        total_val = 0
+        total_test = 0
+        
+        # Sort classes alphabetically for consistent output
+        for class_name in sorted(class_distribution.keys()):
+            counts = class_distribution[class_name]
+            train_count = counts['train']
+            val_count = counts['val']
+            test_count = counts['test']
+            
+            total_train += train_count
+            total_val += val_count
+            total_test += test_count
+            
+            # Truncate class name if too long
+            display_name = class_name[:20] if len(class_name) <= 20 else class_name[:17] + "..."
+            
+            logger.info(f"ℹ️  {display_name:<20} {train_count:<8} {val_count:<8} {test_count:<8}")
+        
+        logger.info("ℹ️  " + "─" * 48)
+        logger.info(f"ℹ️  TOTAL                {total_train:<8} {total_val:<8} {total_test:<8}")
+
     def log_training_phase_header(self, mode: str, epochs: int, num_classes: int = None, 
                                 num_train_checkpoints: int = None, num_test_checkpoints: int = None, 
                                 total_samples: int = None):

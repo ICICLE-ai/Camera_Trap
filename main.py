@@ -670,12 +670,7 @@ def evaluate_oracle_per_checkpoint(model, config, criterion, device):
         avg_accuracy = sum(r['accuracy'] for r in checkpoint_results) / len(checkpoint_results)
         avg_balanced_accuracy = sum(r['balanced_accuracy'] for r in checkpoint_results) / len(checkpoint_results)
         
-        # Log individual checkpoint results for transparency
-        logger = logging.getLogger()
-        logger.info(f"    Oracle per-checkpoint results:")
-        for r in checkpoint_results:
-            logger.info(f"      {r['checkpoint']}: Acc={r['accuracy']:.4f}, Bal.Acc={r['balanced_accuracy']:.4f}, Samples={r['samples']}")
-        logger.info(f"    Averaged across {len(checkpoint_results)} checkpoints")
+        # Results averaged across all checkpoints (detailed logging removed for cleaner output)
     else:
         avg_loss = 0.0
         avg_accuracy = 0.0 
@@ -742,6 +737,38 @@ def train_model_oracle(config, args):
         config, args, mode='oracle'
     )
     
+    # Calculate and log per-class distribution for Oracle mode
+    oracle_class_distribution = {}
+    
+    # Count original training samples per class (before validation split)
+    for ckp_key, samples in train_data.items():
+        if ckp_key.startswith('ckp_'):
+            for sample in samples:
+                class_name = sample['common']
+                if class_name not in oracle_class_distribution:
+                    oracle_class_distribution[class_name] = {'train': 0, 'val': 0, 'test': 0}
+                oracle_class_distribution[class_name]['train'] += 1
+    
+    # Count validation samples (these were taken from training)
+    if val_loader:
+        for batch in val_loader:
+            for common_name in batch['common_name']:
+                if common_name not in oracle_class_distribution:
+                    oracle_class_distribution[common_name] = {'train': 0, 'val': 0, 'test': 0}
+                oracle_class_distribution[common_name]['val'] += 1
+    
+    # Count test samples
+    for ckp_key, samples in test_data.items():
+        if ckp_key.startswith('ckp_'):
+            for sample in samples:
+                class_name = sample['common']
+                if class_name not in oracle_class_distribution:
+                    oracle_class_distribution[class_name] = {'train': 0, 'val': 0, 'test': 0}
+                oracle_class_distribution[class_name]['test'] += 1
+    
+    # Log the Oracle per-class distribution
+    icicle_logger.log_oracle_class_distribution(oracle_class_distribution)
+    
     # Training setup
     num_epochs = args.epochs if hasattr(args, 'epochs') and args.epochs else config.get('training.epochs', 30)
     
@@ -794,8 +821,8 @@ def train_model_oracle(config, args):
             loss=train_loss, 
             acc=train_acc/100, 
             bal_acc=train_acc/100,  # Using same as acc for simplicity
-            lr=lr,
-            samples=total
+            lr=None,
+            
         )
         
         # Run validation if requested
@@ -805,13 +832,12 @@ def train_model_oracle(config, args):
             )
             icicle_logger.log_training_epoch(
                 epoch=epoch,
-                phase="VAL   ",
+                phase=" VAL ",
                 loss=val_loss,
                 acc=val_acc,
                 bal_acc=val_bal_acc,
-                lr=None,  # No LR for validation
-                samples=val_samples,
-                emoji="🔸"
+                emoji="🔸",
+                lr=None
             )
         
         # Run testing if requested - Oracle tests on EACH checkpoint and averages
@@ -825,9 +851,8 @@ def train_model_oracle(config, args):
                 loss=test_loss,
                 acc=test_acc,
                 bal_acc=test_bal_acc,
-                lr=None,  # No LR for testing
-                samples=test_samples,
-                emoji="🔻"
+                emoji="🔻",
+                lr=None
             )
     
     # Log training completion
@@ -1045,6 +1070,38 @@ def train_model_accumulative(config, args):
         logger.info(f"\nRound {checkpoint_round} - ({checkpoint_round}/{max_train_checkpoint})")
         logger.info(f"    Training: ckp_1 → {current_train_checkpoint} | Validation: {current_train_checkpoint} | Test: {current_test_checkpoint}")
         
+        # Calculate and log per-class distribution for this round
+        round_class_distribution = {}
+        
+        # Calculate training samples (cumulative from ckp_1 to current_train_checkpoint)
+        for ckp_num in range(1, checkpoint_round + 1):
+            ckp_key = f'ckp_{ckp_num}'
+            if ckp_key in train_data:
+                for sample in train_data[ckp_key]:
+                    class_name = sample['common']
+                    if class_name not in round_class_distribution:
+                        round_class_distribution[class_name] = {'train': 0, 'val': 0, 'test': 0}
+                    round_class_distribution[class_name]['train'] += 1
+        
+        # Calculate validation samples (from current_train_checkpoint test data)
+        if current_train_checkpoint in test_data:
+            for sample in test_data[current_train_checkpoint]:
+                class_name = sample['common']
+                if class_name not in round_class_distribution:
+                    round_class_distribution[class_name] = {'train': 0, 'val': 0, 'test': 0}
+                round_class_distribution[class_name]['val'] += 1
+        
+        # Calculate test samples (from current_test_checkpoint test data)
+        if current_test_checkpoint in test_data:
+            for sample in test_data[current_test_checkpoint]:
+                class_name = sample['common']
+                if class_name not in round_class_distribution:
+                    round_class_distribution[class_name] = {'train': 0, 'val': 0, 'test': 0}
+                round_class_distribution[class_name]['test'] += 1
+        
+        # Log the distribution for this round
+        icicle_logger.log_accumulative_round_distribution(checkpoint_round, round_class_distribution)
+        
         # Create fresh BioCLIP model for each round (this ensures fresh weights from pre-trained)
         with suppress_verbose_logs():
             model = create_model(config)
@@ -1159,21 +1216,21 @@ def train_model_accumulative(config, args):
             lr = optimizer.param_groups[0]['lr']
             
             # Log epoch results with clean format (indented to match the round structure)
-            print(f"    🔹 Epoch {epoch:2d} [TRAIN] Loss: {train_loss:.4f} | Acc: {train_acc/100:.4f} | Bal.Acc: {train_acc/100:.4f} | LR: {lr:.8f} | Samples: {total}")
+            print(f"    🔹 Epoch {epoch:2d} [TRAIN] Loss: {train_loss:.4f} | Acc: {train_acc/100:.4f} | Bal.Acc: {train_acc/100:.4f}")
             
             # Run validation if requested (on the validation data for this round)
             if args.train_val and val_loader and len(val_loader) > 0:
                 val_loss, val_acc, val_bal_acc, val_samples = evaluate_epoch(
                     model, val_loader, criterion, device, mode_type="accumulative"
                 )
-                print(f"    🔸 Epoch {epoch:2d} [  VAL] Loss: {val_loss:.4f} | Acc: {val_acc:.4f} | Bal.Acc: {val_bal_acc:.4f} | Samples: {val_samples}")
+                print(f"    🔸 Epoch {epoch:2d} [ VAL ] Loss: {val_loss:.4f} | Acc: {val_acc:.4f} | Bal.Acc: {val_bal_acc:.4f}")
             
             # Run testing if requested (on the full test set)
             if args.train_test and test_loader and len(test_loader) > 0:
                 test_loss, test_acc, test_bal_acc, test_samples = evaluate_epoch(
                     model, test_loader, criterion, device, mode_type="accumulative"
                 )
-                print(f"    🔻 Epoch {epoch:2d} [TEST+] Loss: {test_loss:.4f} | Acc: {test_acc:.4f} | Bal.Acc: {test_bal_acc:.4f} | Samples: {test_samples}")
+                print(f"    🔻 Epoch {epoch:2d} [TEST+] Loss: {test_loss:.4f} | Acc: {test_acc:.4f} | Bal.Acc: {test_bal_acc:.4f}")
         
         # Evaluate on validation set (current checkpoint's test data)
         if val_loader and len(val_loader) > 0:
@@ -1207,6 +1264,8 @@ def train_model_accumulative(config, args):
             test_correct = 0
             test_total = 0
             test_loss = 0.0
+            all_predictions = []
+            all_labels = []
             
             with torch.no_grad():
                 for batch in test_loader:
@@ -1220,15 +1279,31 @@ def train_model_accumulative(config, args):
                     _, predicted = outputs.max(1)
                     test_total += labels.size(0)
                     test_correct += predicted.eq(labels).sum().item()
+                    
+                    # Store for balanced accuracy calculation
+                    all_predictions.extend(predicted.cpu().numpy())
+                    all_labels.extend(labels.cpu().numpy())
             
             test_acc = 100. * test_correct / test_total if test_total > 0 else 0
+            
+            # Calculate balanced accuracy
+            if len(all_predictions) > 0:
+                import numpy as np
+                all_predictions = np.array(all_predictions)
+                all_labels = np.array(all_labels)
+                test_bal_acc = calculate_balanced_accuracy(all_predictions, all_labels, num_classes)
+                test_bal_acc_percent = test_bal_acc * 100
+            else:
+                test_bal_acc_percent = 0.0
+            
             # Only log final test result if not already logged during training epochs
             if not args.train_test:
                 logger.info(f"    📊 Round {checkpoint_round} Test → {current_test_checkpoint}: "
-                           f"Acc: {test_acc:.2f}% ({test_correct}/{test_total})")
+                           f"Acc: {test_acc:.2f}% | Bal.Acc: {test_bal_acc_percent:.2f}% ({test_correct}/{test_total})")
             else:
                 # Just log the final test result more concisely when train_test is enabled
-                logger.info(f"    📊 Round {checkpoint_round} Test → {current_test_checkpoint}: Acc: {test_acc:.2f}% ({test_correct}/{test_total})")
+                logger.info(f"    📊 Round {checkpoint_round} Test → {current_test_checkpoint}: "
+                           f"Acc: {test_acc:.2f}% | Bal.Acc: {test_bal_acc_percent:.2f}% ({test_correct}/{test_total})")
         
         # GPU Memory cleanup after each round to prevent memory leaks
         if checkpoint_round < max_train_checkpoint:  # Don't delete final model
