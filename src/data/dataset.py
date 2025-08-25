@@ -189,6 +189,8 @@ def get_oracle_validation_samples(train_data, test_data, all_classes):
     train_samples_final = []
     val_samples_selected = set()  # Track selected sample IDs to avoid duplicates
     
+    logger.info("🔄 Creating Oracle validation set (2 samples per class)")
+    
     for class_name in sorted(all_classes):
         train_class_samples = train_samples_by_class[class_name]
         test_class_samples = test_samples_by_class[class_name]
@@ -234,6 +236,7 @@ def get_oracle_validation_samples(train_data, test_data, all_classes):
         if sample_id not in val_samples_selected:
             train_samples_final.append(sample)
     
+    logger.info(f"📊 Oracle validation: {len(val_samples)} validation samples, {len(train_samples_final)} training samples")
     return train_samples_final, val_samples
 
 
@@ -341,6 +344,21 @@ def get_dataloaders(config_dict, mode='oracle', current_checkpoint=None):
         if ckp_key.startswith('ckp_'):
             all_test_samples.extend(samples)
     
+    print(f"    Classes found: {len(class_names)}")
+    print(f"    Train samples: {len(train_samples)}")
+    print(f"    Val samples: {len(val_samples)}")  
+    # In accumulative mode, testing is performed on the NEXT checkpoint only per round
+    if mode == 'accumulative':
+        try:
+            curr_num = int((current_checkpoint or 'ckp_1').split('_')[1])
+            next_ckp = f"ckp_{curr_num + 1}"
+            next_test_count = len(test_data.get(next_ckp, []))
+            print(f"    Test samples (next: {next_ckp}): {next_test_count}")
+        except Exception:
+            # Fallback to total if parsing fails
+            print(f"    Test samples: {len(all_test_samples)}")
+    else:
+        print(f"    Test samples: {len(all_test_samples)}")
     # Create datasets
     class SimpleCameraTrapDataset(Dataset):
         def __init__(self, samples, class_to_idx, transform=None):
@@ -401,31 +419,32 @@ def get_dataloaders(config_dict, mode='oracle', current_checkpoint=None):
     
     # Create dataloaders with smaller batch sizes to avoid OOM
     training_config = config_dict.get('training', {})
-    train_batch_size = training_config.get('train_batch_size', training_config.get('batch_size', 16))  # Reduced default
-    eval_batch_size = training_config.get('eval_batch_size', 8)  # Further reduced for memory efficiency
+    # Conservative default batch sizes to keep VRAM usage low unless overridden
+    train_batch_size = int(training_config.get('train_batch_size', training_config.get('batch_size', 8)))
+    eval_batch_size = int(training_config.get('eval_batch_size', 8))
     
     train_loader = DataLoader(
         train_dataset,
         batch_size=train_batch_size,
         shuffle=True,
-        num_workers=0,  # Set to 0 for debugging
-        pin_memory=False  # Disable for debugging
+    num_workers=0,
+    pin_memory=False
     )
     
     val_loader = DataLoader(
         val_dataset,
         batch_size=eval_batch_size,
         shuffle=False,
-        num_workers=0,  # Set to 0 for debugging
-        pin_memory=False  # Disable for debugging
+    num_workers=0,
+    pin_memory=False
     )
     
     test_loader = DataLoader(
         test_dataset,
         batch_size=eval_batch_size,
         shuffle=False,
-        num_workers=0,  # Set to 0 for debugging  
-        pin_memory=False  # Disable for debugging
+    num_workers=0,
+    pin_memory=False
     )
     
     return train_loader, val_loader, test_loader

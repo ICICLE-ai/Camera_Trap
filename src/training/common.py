@@ -1,135 +1,222 @@
 """
-Common training utilities shared between different training modes.
+Common training/evaluation utilities.
+
+This module centralizes shared logic used by oracle and accumulative training
+to keep main.py small and avoid code duplication.
 """
+
+from typing import Dict, Tuple, List, Optional
+import logging
 
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
-from pathlib import Path
-import logging
-import contextlib
-import sys
-import io
+import numpy as np
+
+from src.utils import icicle_logger
+from src.utils.metrics import MetricsCalculator
+from src.utils.paths import (
+	get_checkpoint_directories,
+	load_checkpoint_data,
+)
+from src.models.factory import create_model
+from src.data.dataset import get_dataloaders
+
 
 logger = logging.getLogger(__name__)
 
 
-def setup_training_device(args):
-    """Setup training device (CPU/GPU)."""
-    device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
-    return device
+def evaluate_epoch(model: torch.nn.Module,
+				   data_loader,
+				   criterion: nn.Module,
+				   device: torch.device,
+				   ) -> Tuple[float, float, float, int]:
+	"""Evaluate model for one epoch over a dataloader.
+
+	Returns (avg_loss, accuracy, balanced_accuracy, total_samples).
+	"""
+	model.eval()
+	running_loss = 0.0
+	correct = 0
+	total = 0
+	all_predictions: List[int] = []
+	all_labels: List[int] = []
+
+	with torch.no_grad():
+		for batch_idx, batch in enumerate(data_loader):
+			images = batch['image'].to(device)
+			labels = batch['label'].to(device)
+
+			outputs = model(images)
+			loss = criterion(outputs, labels)
+
+			running_loss += loss.item()
+			_, predicted = outputs.max(1)
+			total += labels.size(0)
+			correct += predicted.eq(labels).sum().item()
+
+			all_predictions.extend(predicted.cpu().numpy())
+			all_labels.extend(labels.cpu().numpy())
+
+			# free ASAP
+			del images, labels, outputs, predicted
+			if torch.cuda.is_available() and (batch_idx % 10 == 0):
+				torch.cuda.empty_cache()
+				if hasattr(torch.cuda, 'ipc_collect'):
+					torch.cuda.ipc_collect()
+
+	avg_loss = running_loss / len(data_loader) if len(data_loader) > 0 else 0.0
+	accuracy = (correct / total) if total > 0 else 0.0
+
+	if len(all_predictions) > 0:
+		all_predictions_np = np.array(all_predictions)
+		all_labels_np = np.array(all_labels)
+		# compute balanced accuracy via MetricsCalculator to stay consistent
+		n_classes = int(np.max(all_labels_np)) + 1
+		class_names = [str(i) for i in range(n_classes)]
+		mc = MetricsCalculator(class_names)
+		m = mc.calculate_metrics(all_predictions_np, all_labels_np)
+		bal_acc = float(m['balanced_accuracy'])
+	else:
+		bal_acc = 0.0
+
+	# cleanup
+	del all_predictions, all_labels
+	import gc
+	gc.collect()
+	if torch.cuda.is_available():
+		torch.cuda.empty_cache()
+
+	return avg_loss, accuracy, bal_acc, total
 
 
-def extract_class_names(train_data, test_data):
-    """Extract unique class names from training and test data."""
-    all_classes = set()
-    
-    # Extract from training data
-    for ckp_key, samples in train_data.items():
-        if ckp_key.startswith('ckp_'):
-            for sample in samples:
-                all_classes.add(sample['common'])
-    
-    # Extract from test data
-    for ckp_key, samples in test_data.items():
-        if ckp_key.startswith('ckp_'):
-            for sample in samples:
-                all_classes.add(sample['common'])
-    
-    return sorted(list(all_classes))
+def setup_model_and_data(config: Dict, args, mode: str = 'oracle', current_checkpoint: Optional[str] = None):
+	"""Create model and dataloaders according to the requested mode."""
+	model = create_model(config)
+	train_loader, val_loader, test_loader = get_dataloaders(
+		config, mode=mode, current_checkpoint=current_checkpoint
+	)
+	return model, train_loader, val_loader, test_loader
 
 
-def validate_data_paths(config):
-    """Validate that training and test data paths exist."""
-    data_config = config.get('data', {})
-    train_path = data_config.get('train_path')
-    test_path = data_config.get('test_path')
-    
-    if not train_path or not Path(train_path).exists():
-        logger.error(f"Training data path not found: {train_path}")
-        return False, None, None
-        
-    if not test_path or not Path(test_path).exists():
-        logger.error(f"Test data path not found: {test_path}")
-        return False, None, None
-    
-    return True, train_path, test_path
+def _build_simple_dataset(samples: List[Dict], class_to_idx: Dict[str, int]):
+	"""Create a lightweight torch Dataset for a flat list of samples."""
+	from torch.utils.data import Dataset
+	from PIL import Image
+	import torchvision.transforms as transforms
+
+	transform = transforms.Compose([
+		transforms.Resize((224, 224)),
+		transforms.ToTensor(),
+		transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+	])
+
+	class SimpleDataset(Dataset):
+		def __init__(self, samples, class_to_idx):
+			self.samples = samples
+			self.class_to_idx = class_to_idx
+
+		def __len__(self):
+			return len(self.samples)
+
+		def __getitem__(self, idx):
+			sample = self.samples[idx]
+			try:
+				image = Image.open(sample['image_path']).convert('RGB')
+				image = transform(image)
+			except Exception as e:
+				logger.warning(f"Could not load image {sample.get('image_path','?')}: {e}")
+				image = torch.randn(3, 224, 224)
+			label = self.class_to_idx[sample['common']]
+			return {
+				'image': image,
+				'label': label,
+				'image_path': sample.get('image_path', ''),
+				'common_name': sample.get('common', '')
+			}
+
+	return SimpleDataset(samples, class_to_idx)
 
 
-def setup_training_config(config, num_classes):
-    """Update config with detected number of classes."""
-    if 'model' not in config:
-        config['model'] = {}
-    config['model']['num_classes'] = num_classes
-    return config
+def evaluate_checkpoints(config: Dict,
+						 args,
+						 trained_model: Optional[torch.nn.Module] = None,
+						 ) -> Tuple[float, Dict[str, Dict]]:
+	"""Evaluate a model per checkpoint on the test.json file.
 
+	Returns (avg_balanced_accuracy, checkpoint_results_dict).
+	"""
+	import torch
+	from torch.utils.data import DataLoader
 
-def get_training_hyperparameters(config, args):
-    """Extract training hyperparameters from config and args."""
-    num_epochs = args.epochs if hasattr(args, 'epochs') and args.epochs else config.get('training.epochs', 30)
-    learning_rate = config.get('training.learning_rate', 0.0001)
-    weight_decay = config.get('training.weight_decay', 0.0001)
-    
-    return {
-        'num_epochs': num_epochs,
-        'learning_rate': learning_rate,
-        'weight_decay': weight_decay
-    }
+	logger.info("Starting per-checkpoint evaluation…")
+	checkpoints = get_checkpoint_directories(args.camera)
+	if not checkpoints:
+		logger.error(f"No checkpoints found for camera {args.camera}")
+		return 0.0, {}
 
+	# Prepare model
+	model = trained_model if trained_model is not None else create_model(config)
+	device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
+	model = model.to(device)
+	criterion = nn.CrossEntropyLoss()
 
-def create_optimizer_and_criterion(model, hyperparams):
-    """Create optimizer and loss criterion."""
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(
-        model.parameters(),
-        lr=hyperparams['learning_rate'],
-        weight_decay=hyperparams['weight_decay']
-    )
-    return optimizer, criterion
+	# Load test data once
+	test_path = config.get('data', {}).get('test_path')
+	test_data = load_checkpoint_data(test_path) if test_path else {}
 
+	# Build class mapping
+	class_names = config.get('data', {}).get('class_names') or []
+	if not class_names:
+		# derive from data
+		classes = set()
+		for ckp, samples in test_data.items():
+			if ckp.startswith('ckp_'):
+				for s in samples:
+					classes.add(s['common'])
+		class_names = sorted(list(classes))
+	class_to_idx = {c: i for i, c in enumerate(class_names)}
 
-def log_epoch_results(epoch, phase, loss, acc, bal_acc, lr=None, samples=None, indent=""):
-    """Log epoch results in consistent format."""
-    if phase == "TRAIN":
-        emoji = "🔹"
-    elif "VAL" in phase:
-        emoji = "🔸"
-    elif "TEST" in phase:
-        emoji = "🔻"
-    else:
-        emoji = "📊"
-    
-    log_line = f"{indent}{emoji} Epoch {epoch:2d} [{phase}] Loss: {loss:.4f} | Acc: {acc:.4f} | Bal.Acc: {bal_acc:.4f}"
-    
-    if lr is not None:
-        log_line += f" | LR: {lr:.8f}"
-    
-    if samples is not None:
-        log_line += f" | Samples: {samples}"
-    
-    print(log_line)
+	# Use a conservative default eval batch size to avoid VRAM spikes
+	eval_bs = int(config.get('training', {}).get('eval_batch_size', 8))
 
+	results: Dict[str, Dict] = {}
+	all_bal_acc: List[float] = []
+	all_acc: List[float] = []
 
-@contextlib.contextmanager
-def suppress_verbose_logs():
-    """Context manager to suppress verbose model creation logs."""
-    old_level = logging.getLogger().level
-    old_stdout = sys.stdout
-    old_stderr = sys.stderr
-    try:
-        logging.getLogger().setLevel(logging.ERROR)
-        sys.stdout = io.StringIO()
-        sys.stderr = io.StringIO()
-        yield
-    finally:
-        logging.getLogger().setLevel(old_level)
-        sys.stdout = old_stdout
-        sys.stderr = old_stderr
+	for i, ckp in enumerate(checkpoints, 1):
+		icicle_logger.log_progress(i, len(checkpoints), f"Evaluating {ckp}")
+		samples = test_data.get(ckp, [])
+		if not samples:
+			logger.warning(f"No samples for {ckp}")
+			continue
 
+		ds = _build_simple_dataset(samples, class_to_idx)
+		dl = DataLoader(ds, batch_size=eval_bs, shuffle=False, num_workers=0, pin_memory=False)
 
-def extract_checkpoint_names(data, prefix='ckp_'):
-    """Extract and sort checkpoint names from data."""
-    checkpoints = [key for key in data.keys() if key.startswith(prefix)]
-    checkpoints.sort(key=lambda x: int(x.split('_')[1]))  # Sort numerically
-    return checkpoints
+		loss, acc, bal_acc, total = evaluate_epoch(model, dl, criterion, device)
+		metrics = {
+			'accuracy': float(acc),
+			'balanced_accuracy': float(bal_acc),
+			'loss': float(loss),
+		}
+
+		results[ckp] = {'metrics': metrics, 'sample_count': int(total)}
+		all_bal_acc.append(bal_acc)
+		all_acc.append(acc)
+
+		# Proactive GPU memory cleanup between checkpoints
+		try:
+			import gc
+			del dl, ds
+			gc.collect()
+			if torch.cuda.is_available():
+				torch.cuda.empty_cache()
+				# Collect IPC memory fragments (helps on some drivers)
+				if hasattr(torch.cuda, 'ipc_collect'):
+					torch.cuda.ipc_collect()
+		except Exception:
+			pass
+
+	avg_bal_acc = float(np.mean(all_bal_acc)) if all_bal_acc else 0.0
+	return avg_bal_acc, results
+
