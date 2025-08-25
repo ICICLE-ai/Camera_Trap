@@ -688,9 +688,6 @@ def train_model_oracle(config, args):
     from torch.utils.data import DataLoader
     from pathlib import Path
     
-    logger.info("Starting oracle training...")
-    logger.info(f"Using device: {args.device}")
-    
     # Setup device
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     
@@ -724,8 +721,6 @@ def train_model_oracle(config, args):
     
     class_names = sorted(list(all_classes))
     num_classes = len(class_names)
-    
-    logger.info(f"Found {num_classes} classes: {class_names}")
     
     # Update config with detected num_classes
     if 'model' not in config:
@@ -766,16 +761,26 @@ def train_model_oracle(config, args):
                     oracle_class_distribution[class_name] = {'train': 0, 'val': 0, 'test': 0}
                 oracle_class_distribution[class_name]['test'] += 1
     
+    # Oracle training phase header
+    print("================================================================================")
+    print("🏋️  TRAINING PHASE")
+    print("================================================================================")
+    print("")
+    print("🚀 Training Information:")
+    print("   Parameter        : Value          ")
+    print("   ---------------- : ---------------")
+    print(f"   Mode             : oracle training")
+    print(f"   Epochs           : {args.epochs if hasattr(args, 'epochs') and args.epochs else config.get('training.epochs', 30)}")
+    print(f"   Classes          : {num_classes}")
+    print(f"   Val Samples      : {len(val_loader.dataset) if val_loader else 0}")
+    print(f"   Total Samples    : {len(train_loader.dataset) + len(val_loader.dataset) if val_loader else len(train_loader.dataset)}")
+    print("")
+    
     # Log the Oracle per-class distribution
     icicle_logger.log_oracle_class_distribution(oracle_class_distribution)
     
     # Training setup
     num_epochs = args.epochs if hasattr(args, 'epochs') and args.epochs else config.get('training.epochs', 30)
-    
-    logger.info(f"Training Oracle model for {num_epochs} epochs")
-    
-    # Log concise model summary
-    icicle_logger.log_model_summary("BioCLIP", num_classes)
     
     # Training
     criterion = nn.CrossEntropyLoss()
@@ -814,46 +819,22 @@ def train_model_oracle(config, args):
         train_acc = 100. * correct / total if total > 0 else 0
         lr = optimizer.param_groups[0]['lr']
         
-        # Log epoch results with clean format
-        icicle_logger.log_training_epoch(
-            epoch=epoch, 
-            phase="TRAIN", 
-            loss=train_loss, 
-            acc=train_acc/100, 
-            bal_acc=train_acc/100,  # Using same as acc for simplicity
-            lr=None,
-            
-        )
+        # Log epoch results with clean format (matching accumulative style)
+        print(f"🔹 Epoch {epoch:2d} [TRAIN] Loss: {train_loss:.4f} | Acc: {train_acc/100:.4f} | Bal.Acc: {train_acc/100:.4f}")
         
         # Run validation if requested
         if args.train_val and val_loader and len(val_loader) > 0:
             val_loss, val_acc, val_bal_acc, val_samples = evaluate_epoch(
                 model, val_loader, criterion, device, mode_type="oracle"
             )
-            icicle_logger.log_training_epoch(
-                epoch=epoch,
-                phase=" VAL ",
-                loss=val_loss,
-                acc=val_acc,
-                bal_acc=val_bal_acc,
-                emoji="🔸",
-                lr=None
-            )
+            print(f"🔸 Epoch {epoch:2d} [ VAL ] Loss: {val_loss:.4f} | Acc: {val_acc:.4f} | Bal.Acc: {val_bal_acc:.4f}")
         
         # Run testing if requested - Oracle tests on EACH checkpoint and averages
         if args.train_test:
             test_loss, test_acc, test_bal_acc, test_samples = evaluate_oracle_per_checkpoint(
                 model, config, criterion, device
             )
-            icicle_logger.log_training_epoch(
-                epoch=epoch,
-                phase="TEST*",
-                loss=test_loss,
-                acc=test_acc,
-                bal_acc=test_bal_acc,
-                emoji="🔻",
-                lr=None
-            )
+            print(f"🔻 Epoch {epoch:2d} [TEST*] Loss: {test_loss:.4f} | Acc: {test_acc:.4f} | Bal.Acc: {test_bal_acc:.4f}")
     
     # Log training completion
     icicle_logger.log_training_completion("oracle")

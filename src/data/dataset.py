@@ -189,8 +189,6 @@ def get_oracle_validation_samples(train_data, test_data, all_classes):
     train_samples_final = []
     val_samples_selected = set()  # Track selected sample IDs to avoid duplicates
     
-    logger.info("🔄 Creating Oracle validation set (2 samples per class)")
-    
     for class_name in sorted(all_classes):
         train_class_samples = train_samples_by_class[class_name]
         test_class_samples = test_samples_by_class[class_name]
@@ -236,7 +234,6 @@ def get_oracle_validation_samples(train_data, test_data, all_classes):
         if sample_id not in val_samples_selected:
             train_samples_final.append(sample)
     
-    logger.info(f"📊 Oracle validation: {len(val_samples)} validation samples, {len(train_samples_final)} training samples")
     return train_samples_final, val_samples
 
 
@@ -344,10 +341,7 @@ def get_dataloaders(config_dict, mode='oracle', current_checkpoint=None):
         if ckp_key.startswith('ckp_'):
             all_test_samples.extend(samples)
     
-    print(f"    Classes found: {len(class_names)}")
-    print(f"    Train samples: {len(train_samples)}")
-    print(f"    Val samples: {len(val_samples)}")  
-    print(f"    Test samples: {len(all_test_samples)}")    # Create datasets
+    # Create datasets
     class SimpleCameraTrapDataset(Dataset):
         def __init__(self, samples, class_to_idx, transform=None):
             self.samples = samples
