@@ -24,12 +24,15 @@ logger = logging.getLogger(__name__)
 
 # Import utilities with error handling
 try:
-    from src.utils.logging import setup_logging
-    from src.utils.config import load_config, validate_config, get_mode_type
-    from src.utils.seed import set_seed
+    from src.utils import (
+        icicle_logger, set_seed, GPUManager, MetricsCalculator,
+        setup_experiment_directories, get_checkpoint_directories, validate_camera_data,
+        load_config, update_config_with_args, validate_config, get_mode_type, get_config_summary,
+        ResultsManager, setup_logging
+    )
     UTILS_AVAILABLE = True
 except ImportError as e:
-    logger.warning(f"Could not import utils: {e}")
+    logger.warning(f"Could not import all utils: {e}")
     UTILS_AVAILABLE = False
 
 # Import core components with error handling
@@ -110,35 +113,15 @@ def load_and_validate_config(args):
     config = ConfigManager(args.config)
     config_dict = config.get_config()
     
-    # Flatten nested config structure for validation
-    if 'experiment' in config_dict and 'mode' in config_dict['experiment']:
-        config_dict['mode'] = config_dict['experiment']['mode']
-    
-    if 'system' in config_dict:
-        if 'device' in config_dict['system']:
-            config_dict['device'] = config_dict['system']['device']
-        if 'seed' in config_dict['system']:
-            config_dict['seed'] = config_dict['system']['seed']
-    
-    # Add camera from args
-    config_dict['camera'] = args.camera
-    
-    # Add data paths based on camera
-    config_dict['data'] = {
-        'train_path': f'data/{args.camera.split("_")[0]}/{args.camera}/30/train.json',
-        'test_path': f'data/{args.camera.split("_")[0]}/{args.camera}/30/test.json'
-    }
-    
-    # Update with command line arguments (simplified)
-    if hasattr(args, 'epochs') and args.epochs:
-        if 'training' not in config_dict:
-            config_dict['training'] = {}
-        config_dict['training']['epochs'] = args.epochs
+    # Update with command line arguments
+    config_dict = update_config_with_args(config_dict, args)
     
     # Validate configuration
-    is_valid = validate_config(config_dict)
+    is_valid, issues = validate_config(config_dict, args)
     if not is_valid:
-        logger.error("Configuration validation failed")
+        logger.error("Configuration validation failed:")
+        for issue in issues:
+            logger.error(f"  - {issue}")
         raise ValueError("Invalid configuration")
     
     return config, config_dict
@@ -149,38 +132,35 @@ def setup_framework(args, config_dict):
     # Set random seed
     set_seed(args.seed)
     
-    # Setup GPU if available (simplified)
-    logger.info("Setting up GPU environment...")
+    # Setup GPU if available
+    gpu_manager = GPUManager()
+    gpu_info = gpu_manager.get_gpu_info()
     
-    # Setup experiment directories (simplified)
-    mode_type = get_mode_type(args.config)  # Pass the config path, not dict
-    from pathlib import Path
-    log_dir = Path('logs') / args.camera
-    log_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = "current"
+    # Setup experiment directories
+    log_dir = setup_experiment_directories(args, config_dict)
     
     # Setup logging
-    setup_logging(log_dir / 'training.log')
+    setup_logging(log_dir)
     
-    # Validate camera data (simplified)
-    logger.info(f"Validating camera data for: {args.camera}")
+    # Validate camera data
+    validate_camera_data(args.camera)
     
     return log_dir
 
 
-def run_training_mode(config_dict, args):
+def run_training_mode(config, args):
     """Run training mode based on configuration."""
     if not TRAINING_AVAILABLE:
         raise RuntimeError("Training modules not available. Please check imports.")
     
-    mode_type = config_dict.get('mode', 'unknown')
+    mode_type = get_mode_type(config)
     
     if mode_type == 'oracle':
         logger.info("Starting Oracle training...")
-        trained_model = train_model_oracle(config_dict, args)
+        trained_model = train_model_oracle(config, args)
     elif mode_type == 'accumulative':
         logger.info("Starting Accumulative training...")
-        trained_model = train_model_accumulative(config_dict, args)
+        trained_model = train_model_accumulative(config, args)
     else:
         raise ValueError(f"Unknown training mode: {mode_type}")
     
@@ -209,20 +189,17 @@ def main():
         # Setup framework
         log_dir = setup_framework(args, config_dict)
         
-        # Log setup information (simplified for now)
-        logger.info("🚀 Camera Trap Framework V2 initialized")
-        logger.info(f"Camera: {args.camera}")
-        logger.info(f"Mode: {config_dict.get('mode', 'unknown')}")
-        logger.info(f"Log directory: {log_dir}")
+        # Log setup information
+        icicle_logger.log_setup_details(args, config_dict, log_dir)
         
         # Log dataset information
-        logger.info("📊 Dataset information logging placeholder")
+        icicle_logger.log_dataset_section(config_dict)
         
         # Determine mode and run appropriate workflow
         mode = config_dict.get('mode', 'train')
         
-        if mode in ['train', 'oracle', 'accumulative']:
-            # Training mode (including oracle and accumulative)
+        if mode == 'train':
+            # Training mode
             trained_model = run_training_mode(config_dict, args)
             
             # Run evaluation if model was trained successfully
