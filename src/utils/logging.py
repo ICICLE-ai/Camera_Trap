@@ -7,7 +7,9 @@ import os
 from pathlib import Path
 from datetime import datetime
 import sys
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+import re
+import unicodedata
 
 
 class ICICLEColorFormatter(logging.Formatter):
@@ -170,10 +172,21 @@ class ICICLELogger:
         logger.info("")
 
     def log_info_box(self, title: str, content_dict: Dict[str, Any], box_style: str = 'cyan'):
-        """Create structured information boxes."""
+        """Create structured information boxes from key-value dict (deprecated in favor of log_box)."""
+        # Convert dict to simple "Key: Value" lines and delegate
+        lines = [f"{k}: {v}" for k, v in content_dict.items()]
+        self.log_box(title, lines, box_style)
+
+    def log_box(self, title: str, lines: List[str], box_style: str = 'cyan'):
+        """Render a boxed section with a title and a list of lines.
+        Example:
+        ┌──────┐
+        │ Title│
+        ├──────┤
+        │ line │
+        └──────┘
+        """
         logger = logging.getLogger()
-        
-        # Define box colors - using proper ANSI codes
         colors = {
             'cyan': '\033[96m',
             'blue': '\033[94m', 
@@ -183,25 +196,134 @@ class ICICLELogger:
         }
         color = colors.get(box_style, colors['cyan'])
         reset = '\033[0m'
-        
-        # Calculate box width
-        max_key_len = max(len(str(k)) for k in content_dict.keys()) if content_dict else 10
-        max_val_len = max(len(str(v)) for v in content_dict.values()) if content_dict else 10
-        box_width = max(len(title) + 4, max_key_len + max_val_len + 8, 40)
-        
-        # Create box
+
+        # Normalize input and align colon-separated globally across all sections
+        safe_lines = [str(s) for s in (lines or [])]
+        safe_lines = self._align_colon_global(safe_lines)
+
+        # Compute visual widths (emoji/unicode aware)
+        content_visual = max([self._visual_len(title)] + [self._visual_len(s) for s in safe_lines])
+        region_width = max(38, content_visual)  # region between the two internal spaces
+        horiz_len = region_width + 2            # includes the two internal spaces
+
+        horiz = '─' * horiz_len
+        # Top
         logger.info("")
-        logger.info(f"{color}┌{'─' * (box_width - 2)}┐{reset}")
-        logger.info(f"{color}│ {title:<{box_width - 4}} │{reset}")
-        logger.info(f"{color}├{'─' * (box_width - 2)}┤{reset}")
-        
-        for key, value in content_dict.items():
-            content = f"│ {key}: {value}"
-            padding = box_width - len(content) - 2
-            logger.info(f"{color}{content:<{len(content)}}{' ' * padding} │{reset}")
-        
-        logger.info(f"{color}└{'─' * (box_width - 2)}┘{reset}")
+        logger.info(f"{color}┌{horiz}┐{reset}")
+        # Title
+        title_padded = self._pad_visual(title, region_width)
+        logger.info(f"{color}│ {title_padded} │{reset}")
+        # Divider
+        logger.info(f"{color}├{horiz}┤{reset}")
+        # Lines
+        for s in safe_lines:
+            # Support internal horizontal rules: '<hr>' or any line of only '─'
+            if s.strip().lower() == '<hr>' or re.fullmatch(r"\s*─+\s*", s or ''):
+                logger.info(f"{color}│ {'─' * region_width} │{reset}")
+                continue
+            s_padded = self._pad_visual(s, region_width)
+            logger.info(f"{color}│ {s_padded} │{reset}")
+        # Bottom
+        logger.info(f"{color}└{horiz}┘{reset}")
         logger.info("")
+
+    ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+    def _strip_ansi(self, s: str) -> str:
+        return self.ANSI_RE.sub('', s)
+
+    def _visual_len(self, s: str) -> int:
+        """Approximate display width: handles ANSI, emojis, CJK, and combining marks."""
+        s = self._strip_ansi(s or '')
+        width = 0
+        for ch in s:
+            # Skip zero-width combining marks
+            if unicodedata.combining(ch):
+                continue
+            eaw = unicodedata.east_asian_width(ch)
+            if eaw in ('W', 'F'):
+                width += 2
+            else:
+                # Many emojis are 'Na' but display wide; heuristic: treat non-ASCII symbols as width 2
+                width += 2 if ord(ch) > 0xFF and unicodedata.category(ch).startswith('So') else 1
+        return width
+
+    def _pad_visual(self, s: str, target: int) -> str:
+        """Pad the string with spaces so its visual length equals target."""
+        s = s or ''
+        current = self._visual_len(s)
+        if current >= target:
+            return s
+        return s + (' ' * (target - current))
+
+    def _align_colon_blocks(self, lines: List[str]) -> List[str]:
+        """Align values after ':' so they start at the same column within each block.
+        Blocks are contiguous groups separated by blank lines.
+        """
+        out: List[str] = []
+        block: List[str] = []
+
+        def flush_block():
+            if not block:
+                return
+            # Extract key/value pairs
+            parts = []
+            max_key = 0
+            for ln in block:
+                m = re.match(r"^(.*?):\s*(.*)$", ln)
+                if m:
+                    key = m.group(1)
+                    val = m.group(2)
+                    parts.append((key, val))
+                    if len(key) > max_key:
+                        max_key = len(key)
+                else:
+                    parts.append(None)
+            # Rebuild aligned
+            for idx, ln in enumerate(block):
+                if parts[idx] is None:
+                    out.append(ln)
+                else:
+                    key, val = parts[idx]
+                    padding = ' ' * (max_key - len(key) + 1)  # at least one space after ':'
+                    out.append(f"{key}:{padding}{val}")
+            block.clear()
+
+        for ln in lines:
+            if ln.strip() == "":
+                # blank -> flush current block and keep blank line
+                flush_block()
+                out.append(ln)
+            else:
+                block.append(ln)
+        flush_block()
+        return out
+
+    def _align_colon_global(self, lines: List[str]) -> List[str]:
+        """Align values after ':' so they start at the same column across all lines."""
+        # Find max key length among all lines with ':'
+        max_key = 0
+        parsed: List[Optional[tuple]] = []
+        for ln in lines:
+            m = re.match(r"^(.*?):\s*(.*)$", ln)
+            if m:
+                key = m.group(1)
+                val = m.group(2)
+                parsed.append((key, val))
+                if len(key) > max_key:
+                    max_key = len(key)
+            else:
+                parsed.append(None)
+
+        out: List[str] = []
+        for idx, ln in enumerate(lines):
+            if parsed[idx] is None:
+                out.append(ln)
+            else:
+                key, val = parsed[idx]
+                padding = ' ' * (max_key - len(key) + 1)
+                out.append(f"{key}:{padding}{val}")
+        return out
 
     def log_progress(self, current: int, total: int, description: str = "Progress", emoji: str = "📊"):
         """Log progress with consistent formatting."""
@@ -392,144 +514,86 @@ class ICICLELogger:
     def log_setup_details(self, camera: str, log_location: str, model_info: dict, config_dict: dict, 
                          num_checkpoints: int = None, train_path: str = None, test_path: str = None):
         """Log setup details - Phase 1 of logging structure with merged initial setup."""
-        logger = logging.getLogger()
-        
-        logger.info("=" * 80)
-        logger.info("🚀 CAMERA TRAP FRAMEWORK V2 - SETUP DETAILS")
-        logger.info("=" * 80)
-        logger.info("")
-        
-        # Merged setup information in table format (combining initial setup)
-        setup_configs = [
-            ("Camera", camera),
-            ("Ckpt", num_checkpoints if num_checkpoints is not None else "auto"),
-            ("Train Path", train_path if train_path else "auto-detected"),
-            ("Test Path", test_path if test_path else "auto-detected"),
-            ("Log Dir", log_location),
-            ("Random Seed", config_dict.get('seed', 42)),
+        # Compose a single boxed section containing all setup details
+        setup_lines = [
+            f"Camera: {camera}",
+            f"Ckpt: {num_checkpoints if num_checkpoints is not None else 'auto'}",
+            f"Train Path: {train_path if train_path else 'auto-detected'}",
+            f"Test Path: {test_path if test_path else 'auto-detected'}",
+            f"Log Dir: {log_location}",
+            f"Random Seed: {config_dict.get('seed', 42)}",
         ]
-        
-        # Fixed column widths matching the style
-        key_width = 15
-        val_width = 60
-        
-        logger.info("🔧 Setup Information:")
-        logger.info(f"   {'Parameter':<{key_width}} : {'Value':<{val_width}}")
-        logger.info(f"   {'-' * key_width} : {'-' * val_width}")
-        
-        for key, value in setup_configs:
-            # Truncate long values if needed
-            if isinstance(value, str) and len(value) > val_width:
-                display_value = "..." + value[-(val_width-3):]
-            else:
-                display_value = str(value)
-            logger.info(f"   {key:<{key_width}} : {display_value:<{val_width}}")
-        
-        logger.info("")
-        
-        # Model info
+
         model_name = model_info.get('name', 'BioCLIP')
         model_source = model_info.get('source', 'pre-trained (original)')
         model_classes = model_info.get('num_classes', 'auto-detected')
-        
-        model_configs = [
-            ("Model", model_name),
-            ("Source", model_source),
-            ("Classes", model_classes),
+        model_lines = [
+            f"Model: {model_name}",
+            f"Source: {model_source}",
+            f"Classes: {model_classes}",
         ]
-        
-        logger.info("🤖 Model Information:")
-        logger.info(f"   {'Parameter':<{key_width}} : {'Value':<{val_width}}")
-        logger.info(f"   {'-' * key_width} : {'-' * val_width}")
-        
-        for key, value in model_configs:
-            logger.info(f"   {key:<{key_width}} : {value:<{val_width}}")
-        
-        logger.info("")
-        
-        # Configuration details - formatted as easy-to-read table
-        logger.info("⚙️  Configuration Details:")
-        self._log_config_table(config_dict)
-        logger.info("")
+
+        config_lines = self._build_config_lines(config_dict)
+
+        all_lines = setup_lines + [""] + model_lines + [""] + config_lines
+        self.log_box("🚀 CAMERA TRAP FRAMEWORK V2 - SETUP DETAILS", all_lines, 'cyan')
     
     def _log_config_table(self, config: dict):
-        """Log configuration in a clean table format."""
-        logger = logging.getLogger()
-        
-        # Core configurations
-        configs = [
-            ("Mode", config.get('mode', 'train')),
-            ("Device", config.get('system', {}).get('device', 'cuda')),
-            ("Seed", config.get('system', {}).get('seed', 42)),
-            ("Config File", config.get('config', 'unknown')),
-            ("Model Version", config.get('model', {}).get('version', 'v2')),
+        """Log configuration in a boxed format (no 'Parameter: Value' headers)."""
+        lines = self._build_config_lines(config)
+        self.log_box("Configuration Details", lines, 'cyan')
+
+    def _build_config_lines(self, config: dict) -> List[str]:
+        """Build configuration lines for boxed rendering."""
+        lines: List[str] = [
+            f"Mode: {config.get('mode', 'train')}",
+            f"Device: {config.get('system', {}).get('device', 'cuda')}",
+            f"Seed: {config.get('system', {}).get('seed', 42)}",
+            f"Config File: {config.get('config', 'unknown')}",
+            f"Model Version: {config.get('model', {}).get('version', 'v2')}",
         ]
-        
-        # Training configurations if available
+
         if 'training' in config:
             training = config['training']
-            configs.extend([
-                ("Epochs", training.get('epochs', 30)),
-                ("Train Batch Size", training.get('train_batch_size', 128)),
-                ("Eval Batch Size", training.get('eval_batch_size', 512)),
-                ("Learning Rate", training.get('optimizer_params', {}).get('lr', 0.0001)),
-                ("Optimizer", training.get('optimizer_name', 'AdamW')),
-                ("Scheduler", training.get('scheduler', 'CosineAnnealingLR')),
+            lines.extend([
+                f"Epochs: {training.get('epochs', 30)}",
+                f"Train Batch Size: {training.get('train_batch_size', 128)}",
+                f"Eval Batch Size: {training.get('eval_batch_size', 512)}",
+                f"Learning Rate: {training.get('optimizer_params', {}).get('lr', 0.0001)}",
+                f"Optimizer: {training.get('optimizer_name', 'AdamW')}",
+                f"Scheduler: {training.get('scheduler', 'CosineAnnealingLR')}",
             ])
-        
-        # Model configurations if available
+
         if 'model' in config:
             model = config['model']
-            configs.extend([
-                ("Pretrained", "True" if model.get('pretrained', True) else "False"),
-                ("Use PEFT", "True" if model.get('use_peft', False) else "False"),
-                ("Freeze Backbone", "True" if model.get('freeze_backbone', False) else "False"),
+            lines.extend([
+                f"Pretrained: {'True' if model.get('pretrained', True) else 'False'}",
+                f"Use PEFT: {'True' if model.get('use_peft', False) else 'False'}",
+                f"Freeze Backbone: {'True' if model.get('freeze_backbone', False) else 'False'}",
             ])
-        
-        # Fixed column widths matching the example
-        key_width = 15
-        val_width = 15
-        
-        # Log table with exact format
-        logger.info(f"   {'Parameter':<{key_width}} : {'Value':<{val_width}}")
-        logger.info(f"   {'-' * key_width} : {'-' * val_width}")
-        
-        for key, value in configs:
-            logger.info(f"   {key:<{key_width}} : {value:<{val_width}}")
+
+        return lines
     
     def log_dataset_details(self, train_size: int, test_size: int, num_checkpoints: int, 
                           num_classes: int, class_distribution: dict, checkpoint_list: list = None):
         """Log dataset details - Phase 2 of logging structure."""
         logger = logging.getLogger()
-        
+
         logger.info("=" * 80)
         logger.info("📊 DATASET DETAILS")
         logger.info("=" * 80)
         logger.info("")
-        
-        # Dataset information in table format
-        dataset_configs = [
-            ("Training Size", f"{train_size:,}"),
-            ("Test Size", f"{test_size:,}"),
-            ("Ckpt", num_checkpoints),
-            ("Classes", num_classes),
-        ]
-        
-        # Fixed column widths matching the style
-        key_width = 15
-        val_width = 10
-        
-        logger.info("📊 Dataset Information:")
-        logger.info(f"   {'Parameter':<{key_width}} : {'Value':<{val_width}}")
-        logger.info(f"   {'-' * key_width} : {'-' * val_width}")
-        
-        for key, value in dataset_configs:
-            logger.info(f"   {key:<{key_width}} : {value:<{val_width}}")
-        
-        logger.info("")
-        
-        # Per-class distribution - simple Train/Test overview
-        self.log_dataset_overview(class_distribution)
+
+        # Build combined lines for the box
+        dataset_lines = [
+            f"Training Size: {train_size:,}",
+            f"Test Size: {test_size:,}",
+            f"Ckpt: {num_checkpoints}",
+            f"Classes: {num_classes}",
+            "<hr>",
+        ] + self._build_dataset_overview_lines(class_distribution)
+
+        self.log_box("Dataset Information", dataset_lines, 'cyan')
         logger.info("")
     
     def log_dataset_overview(self, class_distribution: dict):
@@ -561,6 +625,31 @@ class ICICLELogger:
         
         logger.info("ℹ️  " + "─" * 40)
         logger.info(f"ℹ️  TOTAL                {total_train:<8} {total_test:<8}")
+
+    def _build_dataset_overview_lines(self, class_distribution: dict) -> List[str]:
+        """Return lines representing the per-class Train/Test table for embedding in a box."""
+        lines: List[str] = []
+        header_prefix = ""
+        lines.append(f"{header_prefix}Per-class distribution:")
+        lines.append(f"{header_prefix}Class                Train    Test")
+        lines.append("─" * 40)
+
+        total_train = 0
+        total_test = 0
+
+        sorted_classes = sorted(class_distribution.items(), key=lambda x: x[1].get('train', 0), reverse=True)
+        for class_name, stats in sorted_classes:
+            train_count = stats.get('train', 0)
+            test_count = stats.get('test', 0)
+            total_train += train_count
+            total_test += test_count
+            display_name = class_name[:20] if len(class_name) <= 20 else class_name[:17] + "..."
+            # Keep spacing similar to outer printing
+            lines.append(f"{display_name:<20} {train_count:<8} {test_count:<8}")
+
+        lines.append("─" * 40)
+        lines.append(f"TOTAL                {total_train:<8} {total_test:<8}")
+        return lines
 
     def log_oracle_validation_distribution(self, class_distribution: dict):
         """Log Oracle validation strategy showing Train, Test, Val columns with (-number) indicators."""
