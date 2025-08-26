@@ -179,7 +179,9 @@ def load_and_validate_config(args):
     
     # Add camera-specific data paths
     camera_name = args.camera
-    camera_data_dir = f"data/APN/{camera_name}/30"
+    # Derive project/dataset name from the camera prefix (e.g., MAD_A05 -> MAD)
+    project_name = camera_name.split('_', 1)[0] if '_' in camera_name else camera_name
+    camera_data_dir = f"data/{project_name}/{camera_name}/30"
     
     # Ensure data section exists
     if 'data' not in config_dict:

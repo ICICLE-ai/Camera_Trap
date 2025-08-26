@@ -274,8 +274,7 @@ def get_class_embeddings(model, tokenizer, class_names: List[str],
 
 def get_simple_class_embeddings(model, tokenizer, class_names: List[str]) -> torch.Tensor:
     """
-    Generate simple class embeddings using basic "a photo of {class}" templates.
-    Uses HuggingFace tokenizer like the original ICICLE-Benchmark implementation.
+    Generate class embeddings using richer OpenAI ImageNet-style templates to match ICICLE.
     """
     device = next(model.parameters()).device
     context_length = getattr(model, 'context_length', 77)
@@ -296,8 +295,8 @@ def get_simple_class_embeddings(model, tokenizer, class_names: List[str]) -> tor
         class_embeddings = torch.empty(len(class_names), embed_dim)
         
         for idx, class_name in enumerate(class_names):
-            # Simple template
-            texts = [f"a photo of {class_name}."]
+            # Use richer template set
+            texts = [template.format(CLZ_NAME=class_name) for template in OPENAI_IMAGENET_TEMPLATE]
             
             try:
                 # Use HuggingFace tokenizer with proper padding and truncation
