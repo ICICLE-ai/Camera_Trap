@@ -227,3 +227,71 @@ def evaluate_checkpoints(config: Dict,
 	avg_bal_acc = float(np.mean(all_bal_acc)) if all_bal_acc else 0.0
 	return avg_bal_acc, results
 
+
+def evaluate_single_checkpoint(
+	config: Dict,
+	args,
+	checkpoint: str,
+	model: Optional[torch.nn.Module] = None,
+) -> Tuple[Dict[str, float], int]:
+	"""Evaluate a single checkpoint's test split and return (metrics, sample_count).
+
+	If model is None, a fresh pretrained model is created (zero-shot behavior).
+	"""
+	import torch
+	from torch.utils.data import DataLoader
+
+	device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
+	model = model if model is not None else create_model(config)
+	model = model.to(device)
+	criterion = nn.CrossEntropyLoss()
+
+	# Load test data and build class map
+	test_path = config.get('data', {}).get('test_path')
+	test_data = load_checkpoint_data(test_path) if test_path else {}
+	samples = test_data.get(checkpoint, [])
+	if not samples:
+		logger.warning(f"No samples found for checkpoint {checkpoint}")
+		return {'accuracy': 0.0, 'balanced_accuracy': 0.0, 'loss': 0.0}, 0
+
+	class_names = config.get('data', {}).get('class_names') or []
+	if not class_names:
+		classes = set()
+		for ckp, ss in test_data.items():
+			if ckp.startswith('ckp_'):
+				for s in ss:
+					classes.add(s['common'])
+		class_names = sorted(list(classes))
+	class_to_idx = {c: i for i, c in enumerate(class_names)}
+
+	# Dataset and loader
+	ds = _build_simple_dataset(samples, class_to_idx)
+	dl = DataLoader(
+		ds,
+		batch_size=int(config.get('training', {}).get('eval_batch_size', 8)),
+		shuffle=False,
+		num_workers=0,
+		pin_memory=False,
+	)
+
+	loss, acc, bal_acc, total = evaluate_epoch(model, dl, criterion, device)
+	metrics = {
+		'accuracy': float(acc),
+		'balanced_accuracy': float(bal_acc),
+		'loss': float(loss),
+	}
+
+	# cleanup
+	try:
+		import gc
+		del dl, ds
+		gc.collect()
+		if torch.cuda.is_available():
+			torch.cuda.empty_cache()
+			if hasattr(torch.cuda, 'ipc_collect'):
+				torch.cuda.ipc_collect()
+	except Exception:
+		pass
+
+	return metrics, int(total)
+

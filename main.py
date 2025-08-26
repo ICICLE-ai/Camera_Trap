@@ -62,6 +62,7 @@ try:
     from src.training.oracle import train as train_oracle
     from src.training.accumulative import train as train_accumulative
     from src.training.common import evaluate_checkpoints as eval_per_checkpoint
+    from src.training.common import evaluate_single_checkpoint as eval_single_ckp
     from src.training.common import setup_model_and_data as setup_model_and_data_shared
     TRAINING_AVAILABLE = True
 except Exception as e:
@@ -481,8 +482,28 @@ def main():
         
         # Run evaluation
         accuracy, checkpoint_results = evaluate_model_checkpoint_based(config_dict, args, trained_model)
+
+        # If accumulative training was used, ensure ckp_1 reflects Round 0 (zero-shot) by
+        # re-evaluating ckp_1 with a fresh pretrained model and overriding that entry.
+        try:
+            mode_type_detected = summary_data.get('mode_type') if 'summary_data' in locals() else None
+        except Exception:
+            mode_type_detected = None
+        # Determine mode type from config path as used by ResultsManager
+        cfg_path = config_dict.get('config', '')
+        is_accum = ('accumulative.yaml' in cfg_path) or (mode_type == 'accumulative')
+        if is_accum and 'ckp_1' in checkpoint_results:
+            try:
+                zs_metrics, zs_n = eval_single_ckp(config_dict, args, 'ckp_1', model=None)
+                # Overwrite ckp_1 metrics so it matches zero-shot Round 0
+                checkpoint_results['ckp_1'] = {
+                    'metrics': zs_metrics,
+                    'sample_count': int(zs_n)
+                }
+            except Exception as e:
+                logger.warning(f"Failed to override ckp_1 with zero-shot metrics: {e}")
         
-        # Store results
+    # Store results
         for checkpoint, result in checkpoint_results.items():
             results_manager.add_checkpoint_result(
                 checkpoint=checkpoint,
