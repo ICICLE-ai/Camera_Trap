@@ -72,6 +72,54 @@ def train(config: Dict, args) -> torch.nn.Module:
 		total_samples=sum(len(train_data[c]) for c in train_ckps),
 	)
 
+	# Round 0: evaluate pre-trained model without any training on the first checkpoint test set
+	try:
+		from .common import _build_simple_dataset
+		from torch.utils.data import DataLoader
+
+		device0 = device
+		model0 = create_model(config).to(device0)
+		criterion0 = nn.CrossEntropyLoss()
+		# Prefer ckp_1; fallback to the earliest test checkpoint
+		first_ckp = 'ckp_1' if 'ckp_1' in test_data else (test_ckps[0] if test_ckps else None)
+		if first_ckp is not None and len(test_data.get(first_ckp, [])) > 0:
+			class_to_idx0 = {n: i for i, n in enumerate(class_names)}
+			ds0 = _build_simple_dataset(test_data[first_ckp], class_to_idx0)
+			dl0 = DataLoader(
+				ds0,
+				batch_size=int(config.get('training', {}).get('eval_batch_size', 8)),
+				shuffle=False,
+				num_workers=0,
+				pin_memory=False,
+			)
+			l0, a0, ba0, n0 = evaluate_epoch(model0, dl0, criterion0, device0)
+			key_w = 7
+			# Also print Round 0 dataset stats for the first checkpoint test
+			lines0b = [
+				f"Round 0 - Testing on {first_ckp}",
+				f"    Classes found: {len(class_names)}",
+				f"    Test samples (next: {first_ckp}): {len(test_data.get(first_ckp, []))}",
+				f"    TEST+:",
+				f"      {'Loss':<{key_w}}: {l0:.4f}",
+				f"      {'Acc':<{key_w}}: {a0:.4f}",
+				f"      {'Bal.Acc':<{key_w}}: {ba0:.4f}",
+				f"\n"
+			]
+			icicle_logger.log_model_info("\n".join(lines0b))
+			# Clean up temporary objects
+			try:
+				import gc
+				del dl0, ds0, model0
+				gc.collect()
+				if torch.cuda.is_available():
+					torch.cuda.empty_cache()
+					if hasattr(torch.cuda, 'ipc_collect'):
+						torch.cuda.ipc_collect()
+			except Exception:
+				pass
+	except Exception as e:
+		logger.warning(f"Round 0 evaluation skipped due to error: {e}")
+
 	final_model = None
 	lr = config.get('training', {}).get('learning_rate', 1e-4)
 	wd = config.get('training', {}).get('weight_decay', 1e-4)
@@ -79,7 +127,7 @@ def train(config: Dict, args) -> torch.nn.Module:
 	for round_idx in range(1, max_train_round + 1):
 		curr_train_ckp = f"ckp_{round_idx}"
 		next_test_ckp = f"ckp_{round_idx + 1}"
-		logger.info(f"\nRound {round_idx} - Training up to {curr_train_ckp}, validating on {curr_train_ckp}, testing on {next_test_ckp}")
+		# Round header will be printed once below alongside dataset stats
 
 		# fresh model each round
 		model = create_model(config).to(device)
@@ -111,6 +159,7 @@ def train(config: Dict, args) -> torch.nn.Module:
 		from torch.utils.data import DataLoader
 		next_samples = test_data.get(next_test_ckp, [])
 		next_test_loader = None
+		ds_next = None
 		if next_samples:
 			class_to_idx = {n: i for i, n in enumerate(class_names)}
 			ds_next = _build_simple_dataset(next_samples, class_to_idx)
@@ -122,6 +171,22 @@ def train(config: Dict, args) -> torch.nn.Module:
 				pin_memory=False,
 			)
 			# Next-ckpt loader prepared; avoid redundant sample count prints here
+
+		# Print per-round dataset stats in the requested format (also serves as round header)
+		try:
+			tr_n = len(train_loader.dataset) if train_loader is not None else 0
+			val_n = len(val_loader.dataset) if (val_loader is not None and hasattr(val_loader, 'dataset')) else 0
+			test_n = len(next_samples)
+			lines_round = [
+				f"Round {round_idx} - Training up to {curr_train_ckp}, validating on {curr_train_ckp}, testing on {next_test_ckp}",
+				f"    Classes found: {len(class_names)}",
+				f"    Train samples: {tr_n}",
+				f"    Val samples: {val_n}",
+				f"    Test samples (next: {next_test_ckp}): {test_n}",
+			]
+			icicle_logger.log_model_info("\n".join(lines_round))
+		except Exception:
+			pass
 
 		# train epochs with early stopping policy if validation available
 		model.train()
@@ -169,7 +234,8 @@ def train(config: Dict, args) -> torch.nn.Module:
 					if improved:
 						best_val_ba = float(v_ba)
 						best_epoch = int(epoch)
-						best_state = deepcopy(model.state_dict())
+						# Keep best state on CPU to avoid holding CUDA tensors between rounds
+						best_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
 					if use_es:
 						val_ba_hist.append(float(v_ba))
 
@@ -246,8 +312,22 @@ def train(config: Dict, args) -> torch.nn.Module:
 							f"    {'Bal.Acc':<{key_w}}: {tba:.4f}",
 						]
 					icicle_logger.log_model_info("\n".join(lines))
+				# Save round-best weights
+				try:
+					import os
+					out_dir = config.get('output_dir') or '.'
+					os.makedirs(out_dir, exist_ok=True)
+					ckpt_path = os.path.join(out_dir, f"acc_round{round_idx:02d}_best_epoch{best_epoch + 1:02d}.pth")
+					torch.save(model.state_dict(), ckpt_path)
+					icicle_logger.log_model_info(f"💾 Saved round {round_idx} best weights → {ckpt_path}")
+					icicle_logger.log_model_info("────────────────────────────────────────────────────────────────────────────────")
+				except Exception as e:
+					logger.warning(f"Failed to save round {round_idx} best weights: {e}")
 			except Exception:
 				pass
+			finally:
+				# Release best_state CPU tensors reference
+				best_state = None
 
 		# End-of-round test summary if not tested per-epoch
 		if (not args.train_test) and next_test_loader is not None and len(next_test_loader) > 0:
@@ -264,9 +344,27 @@ def train(config: Dict, args) -> torch.nn.Module:
 				logger.warning(f"Failed to save accumulative_model.pth: {e}")
 		else:
 			# clean
-			del model, optimizer, criterion
-			if torch.cuda.is_available():
-				torch.cuda.empty_cache()
+			try:
+				del model, optimizer, criterion
+				if scheduler is not None:
+					del scheduler
+				if next_test_loader is not None:
+					del next_test_loader
+				if ds_next is not None:
+					del ds_next
+				if 'train_loader' in locals():
+					del train_loader
+				if 'val_loader' in locals():
+					del val_loader
+				import gc
+				gc.collect()
+			except Exception:
+				pass
+			finally:
+				if torch.cuda.is_available():
+					torch.cuda.empty_cache()
+					if hasattr(torch.cuda, 'ipc_collect'):
+						torch.cuda.ipc_collect()
 
 	icicle_logger.log_training_completion(f"accumulative ({max_train_round} rounds)")
 	return final_model

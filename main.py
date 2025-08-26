@@ -366,12 +366,14 @@ def main():
         
         # Setup experiment
         log_dir, timestamp, mode_type, gpu_manager = setup_experiment(args)
-        
+
         # Load and validate configuration
         config, config_dict = load_and_validate_config(args)
-        
+
         # Add the original config file path to config_dict for logging
         config_dict['config'] = args.config
+        # Inject output directory so training modules can save artifacts
+        config_dict['output_dir'] = log_dir
         
         # Get checkpoint information for initial setup
         checkpoints = get_checkpoint_directories(args.camera)
@@ -450,7 +452,7 @@ def main():
         train_checkpoints = [key for key in train_data.keys() if key.startswith('ckp_')]
         test_checkpoints = [key for key in test_data.keys() if key.startswith('ckp_')]
         num_checkpoints = len(test_checkpoints)
-        
+            
         icicle_logger.log_dataset_details(
             train_size=total_train_samples,
             test_size=total_test_samples,
@@ -460,8 +462,9 @@ def main():
             checkpoint_list=test_checkpoints
         )
         
-        # Update config with detected num_classes
+        # Update config with detected num_classes and class names (ensures ZS uses correct prompts)
         config_dict['model']['num_classes'] = len(all_classes)
+        config_dict.setdefault('data', {})['class_names'] = sorted(list(all_classes))
         
         # ========== PHASE 3: TRAINING PHASE ==========
         if args.mode != 'eval' and not args.eval_only:

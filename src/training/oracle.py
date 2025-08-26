@@ -141,7 +141,8 @@ def train(config: Dict, args) -> torch.nn.Module:
 	use_cuda = torch.cuda.is_available()
 	# Early stopping policy when validation is enabled
 	use_es = bool(args.train_val and val_loader and len(val_loader) > 0)
-	target_epochs = base_epochs if not use_es else 10
+	# Oracle ES: warmup=10, monitor=5, max=30 → at least 15 epochs, up to 30
+	target_epochs = base_epochs if not use_es else 15
 
 	val_ba_hist = []  # track validation balanced accuracy per epoch
 	best_val_ba = float('-inf')
@@ -189,7 +190,8 @@ def train(config: Dict, args) -> torch.nn.Module:
 			if improved:
 				best_val_ba = float(v_ba)
 				best_epoch = int(epoch)
-				best_state = deepcopy(model.state_dict())
+				# Keep best state on CPU to avoid retaining CUDA tensors
+				best_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
 			if use_es:
 				val_ba_hist.append(float(v_ba))
 
@@ -200,21 +202,25 @@ def train(config: Dict, args) -> torch.nn.Module:
 		# Visual separator between epochs
 		print("" + "────────────────────────────────────────────────────────────────────────────────")
 
-		# Early stopping decision point after 10 epochs (warmup=5, monitor=5)
-		if use_es and epoch == 9:  # decision after completing 10 epochs (0-based)
-			if len(val_ba_hist) >= 10:
-				best_idx_10 = int(np.argmax(val_ba_hist[:10])) + 1
-				best_val_10 = float(val_ba_hist[best_idx_10 - 1])
-				if best_idx_10 == 10:
+		# Early stopping decision point after 15 epochs (warmup=10, monitor=5)
+		if use_es and epoch == 14:  # decision after completing 15 epochs (0-based)
+			if len(val_ba_hist) >= 15:
+				warm_best = float(np.max(val_ba_hist[:10]))
+				monitor_best = float(np.max(val_ba_hist[10:15]))
+				# Continue if monitor window improved beyond warmup; up to max 30
+				if monitor_best > warm_best:
 					icicle_logger.log_model_info(
-						f"Early stopping: improvement at epoch 10; continuing up to {min(base_epochs, 20)} epochs."
+						f"Early stopping: improvement detected in monitor window (monitor={monitor_best:.4f} > warmup={warm_best:.4f}). Continuing up to {min(base_epochs, 30)} epochs."
 					)
-					target_epochs = max(target_epochs, min(base_epochs, 20))
+					target_epochs = max(target_epochs, min(base_epochs, 30))
 				else:
-					best_epoch = best_idx_10 - 1
-					best_val_ba = best_val_10
-					icicle_logger.log_model_info("Early stopping triggered after 10 epochs (warmup=5, monitor=5)")
-					icicle_logger.log_model_info(f"Best epoch within first 10: {best_idx_10} with val_balanced_acc={best_val_10:.4f}")
+					# Stop at 15, pick best within 15
+					best_idx_15 = int(np.argmax(val_ba_hist[:15])) + 1
+					best_val_15 = float(val_ba_hist[best_idx_15 - 1])
+					best_epoch = best_idx_15 - 1
+					best_val_ba = best_val_15
+					icicle_logger.log_model_info("Early stopping triggered after 15 epochs (warmup=10, monitor=5)")
+					icicle_logger.log_model_info(f"Best epoch within first 15: {best_idx_15} with val_balanced_acc={best_val_15:.4f}")
 					break
 
 		# Step scheduler at end of epoch
@@ -232,6 +238,16 @@ def train(config: Dict, args) -> torch.nn.Module:
 			icicle_logger.log_model_info(
 				f"Selected best epoch {best_epoch + 1} (val_balanced_acc={best_val_ba:.4f}); using these weights for final testing/saving."
 			)
+			# Save best overall weights
+			try:
+				import os
+				out_dir = config.get('output_dir') or '.'
+				os.makedirs(out_dir, exist_ok=True)
+				ckpt_path = os.path.join(out_dir, f"oracle_best_epoch{best_epoch + 1:02d}.pth")
+				torch.save(model.state_dict(), ckpt_path)
+				icicle_logger.log_model_info(f"💾 Saved Oracle best weights → {ckpt_path}")
+			except Exception as e:
+				logger.warning(f"Failed to save Oracle best weights: {e}")
 			# End-of-run summary with best weights (multiline, aligned)
 			val_metrics = None
 			test_metrics = None
@@ -270,6 +286,25 @@ def train(config: Dict, args) -> torch.nn.Module:
 		logger.info(f"Model saved to {model_path}")
 	except Exception as e:
 		logger.warning(f"Failed to save model: {e}")
+
+	# Cleanup lingering references
+	try:
+		del train_loader
+		if val_loader is not None:
+			del val_loader
+		if test_loader is not None:
+			del test_loader
+		if scheduler is not None:
+			del scheduler
+		del optimizer, criterion
+		import gc
+		gc.collect()
+		if torch.cuda.is_available():
+			torch.cuda.empty_cache()
+			if hasattr(torch.cuda, 'ipc_collect'):
+				torch.cuda.ipc_collect()
+	except Exception:
+		pass
 
 	return model
 

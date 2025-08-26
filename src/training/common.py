@@ -93,7 +93,7 @@ def setup_model_and_data(config: Dict, args, mode: str = 'oracle', current_check
 	"""Create model and dataloaders according to the requested mode."""
 	model = create_model(config)
 	train_loader, val_loader, test_loader = get_dataloaders(
-		config, mode=mode, current_checkpoint=current_checkpoint
+		config, mode=mode, current_checkpoint=current_checkpoint, verbose=False
 	)
 	return model, train_loader, val_loader, test_loader
 
@@ -194,6 +194,13 @@ def evaluate_checkpoints(config: Dict,
 		dl = DataLoader(ds, batch_size=eval_bs, shuffle=False, num_workers=0, pin_memory=False)
 
 		loss, acc, bal_acc, total = evaluate_epoch(model, dl, criterion, device)
+		# Print per-checkpoint quick metric summary with clear indenting
+		try:
+			# Two-level indentation for readability under the progress line
+			label = "balanced acc:"
+			icicle_logger.log_model_info(f"      {label:<15} {bal_acc:>10.4f}")
+		except Exception:
+			pass
 		metrics = {
 			'accuracy': float(acc),
 			'balanced_accuracy': float(bal_acc),

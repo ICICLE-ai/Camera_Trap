@@ -269,7 +269,7 @@ def get_accumulative_validation_samples(train_data, test_data, current_checkpoin
     return train_samples, val_samples
 
 
-def get_dataloaders(config_dict, mode='oracle', current_checkpoint=None):
+def get_dataloaders(config_dict, mode='oracle', current_checkpoint=None, verbose: bool = False):
     """
     Create train, validation, and test dataloaders from config with smart validation strategies.
     
@@ -344,21 +344,22 @@ def get_dataloaders(config_dict, mode='oracle', current_checkpoint=None):
         if ckp_key.startswith('ckp_'):
             all_test_samples.extend(samples)
     
-    print(f"    Classes found: {len(class_names)}")
-    print(f"    Train samples: {len(train_samples)}")
-    print(f"    Val samples: {len(val_samples)}")  
-    # In accumulative mode, testing is performed on the NEXT checkpoint only per round
-    if mode == 'accumulative':
-        try:
-            curr_num = int((current_checkpoint or 'ckp_1').split('_')[1])
-            next_ckp = f"ckp_{curr_num + 1}"
-            next_test_count = len(test_data.get(next_ckp, []))
-            print(f"    Test samples (next: {next_ckp}): {next_test_count}")
-        except Exception:
-            # Fallback to total if parsing fails
+    if verbose:
+        print(f"    Classes found: {len(class_names)}")
+        print(f"    Train samples: {len(train_samples)}")
+        print(f"    Val samples: {len(val_samples)}")
+        # In accumulative mode, testing is performed on the NEXT checkpoint only per round
+        if mode == 'accumulative':
+            try:
+                curr_num = int((current_checkpoint or 'ckp_1').split('_')[1])
+                next_ckp = f"ckp_{curr_num + 1}"
+                next_test_count = len(test_data.get(next_ckp, []))
+                print(f"    Test samples (next: {next_ckp}): {next_test_count}")
+            except Exception:
+                # Fallback to total if parsing fails
+                print(f"    Test samples: {len(all_test_samples)}")
+        else:
             print(f"    Test samples: {len(all_test_samples)}")
-    else:
-        print(f"    Test samples: {len(all_test_samples)}")
     # Create datasets
     class SimpleCameraTrapDataset(Dataset):
         def __init__(self, samples, class_to_idx, transform=None):

@@ -309,12 +309,14 @@ def get_simple_class_embeddings(model, tokenizer, class_names: List[str]) -> tor
                 )
                 input_ids = tokenized['input_ids'].to(device)
                 
-                # Get text embedding
-                text_embedding = model.encode_text(input_ids)
+                # Get text embeddings for all templates and average them (ICICLE style)
+                text_embeddings = model.encode_text(input_ids)
+                text_embeddings = F.normalize(text_embeddings, dim=-1)
+                text_embedding = text_embeddings.mean(dim=0)
                 text_embedding = F.normalize(text_embedding, dim=-1)
                 
-                class_embeddings[idx] = text_embedding[0].cpu()
-                logger.debug(f"Generated embedding for '{texts[0]}'")
+                class_embeddings[idx] = text_embedding.cpu()
+                logger.debug(f"Averaged {len(texts)} templates for '{class_name}'")
                 
             except Exception as e:
                 logger.warning(f"Failed to encode text for {class_name}: {e}")
