@@ -22,52 +22,23 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 # Create logger first
 logger = logging.getLogger(__name__)
 
-# Import utilities with error handling
-try:
-    from src.utils import (
-        icicle_logger, set_seed, GPUManager, MetricsCalculator,
-        setup_experiment_directories, get_checkpoint_directories, validate_camera_data,
-        load_config, update_config_with_args, validate_config, get_mode_type, get_config_summary,
-        ResultsManager, setup_logging
-    )
-    UTILS_AVAILABLE = True
-except ImportError as e:
-    logger.warning(f"Could not import all utils: {e}")
-    UTILS_AVAILABLE = False
-
-# Import core components with error handling
-try:
-    from src.config import ConfigManager
-    CONFIG_AVAILABLE = True
-except ImportError as e:
-    logger.warning(f"Could not import ConfigManager: {e}")
-    CONFIG_AVAILABLE = False
-
-try:
-    from src.models.factory import create_model
-    MODEL_AVAILABLE = True
-except ImportError as e:
-    logger.warning(f"Could not import create_model: {e}")
-    MODEL_AVAILABLE = False
-
-try:
-    from src.data.dataset import get_dataloaders
-    DATA_AVAILABLE = True
-except ImportError as e:
-    logger.warning(f"Could not import get_dataloaders: {e}")
-    DATA_AVAILABLE = False
+# Imports (organized, without try/except)
+from src.utils import (
+    icicle_logger, set_seed, GPUManager, MetricsCalculator,
+    setup_experiment_directories, get_checkpoint_directories, validate_camera_data,
+    load_config, update_config_with_args, validate_config, get_mode_type, get_config_summary,
+    ResultsManager, setup_logging,
+)
+from src.config import ConfigManager
+from src.models.factory import create_model
+from src.data.dataset import get_dataloaders
 
 # Training modules
-try:
-    from src.training.oracle import train as train_oracle
-    from src.training.accumulative import train as train_accumulative
-    from src.training.common import evaluate_checkpoints as eval_per_checkpoint
-    from src.training.common import evaluate_single_checkpoint as eval_single_ckp
-    from src.training.common import setup_model_and_data as setup_model_and_data_shared
-    TRAINING_AVAILABLE = True
-except Exception as e:
-    logger.warning(f"Training modules not fully available: {e}")
-    TRAINING_AVAILABLE = False
+from src.training.oracle import train as train_oracle
+from src.training.accumulative import train as train_accumulative
+from src.training.common import evaluate_checkpoints as eval_per_checkpoint
+from src.training.common import evaluate_single_checkpoint as eval_single_ckp
+from src.training.common import setup_model_and_data as setup_model_and_data_shared
 
 
 def parse_args():
