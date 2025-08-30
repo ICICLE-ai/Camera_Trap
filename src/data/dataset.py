@@ -6,11 +6,13 @@ import os
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any, Tuple, TYPE_CHECKING
 from torch.utils.data import DataLoader, Dataset
 import torch
 
-from ..core.config import Config
+# Avoid runtime dependency on removed core.config; use type-only alias
+if TYPE_CHECKING:
+    Config = Any
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +54,7 @@ class CameraTrapDataset(Dataset):
 class DatasetManager:
     """Manages dataset loading and processing for ICICLE-Benchmark V2."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: 'Config'):
         """
         Initialize dataset manager.
         

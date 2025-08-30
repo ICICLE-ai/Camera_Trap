@@ -8,7 +8,9 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from ..core.config import Config
+from typing import TYPE_CHECKING, Any
+if TYPE_CHECKING:
+    Config = Any
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +18,7 @@ logger = logging.getLogger(__name__)
 class ModelFactory:
     """Factory for creating different types of models."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: 'Config'):
         self.config = config
         
     def create_model(self) -> nn.Module:

@@ -9,7 +9,9 @@ from typing import Tuple, Any
 import torch
 import torch.nn as nn
 
-from ..core.config import Config
+from typing import TYPE_CHECKING, Any
+if TYPE_CHECKING:
+    Config = Any
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +20,7 @@ class OODFactory:
     """Factory for creating OOD detection modules."""
     
     @staticmethod
-    def create(method: str, config: Config) -> 'BaseOODModule':
+    def create(method: str, config: 'Config') -> 'BaseOODModule':
         """Create OOD module based on method name."""
         
         method = method.lower()
@@ -39,7 +41,7 @@ class OODFactory:
 class BaseOODModule(ABC):
     """Base class for OOD detection modules."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: 'Config'):
         self.config = config
         self.device = config.device
     
@@ -123,7 +125,7 @@ class OODOracle(BaseOODModule):
 class OODUncertainty(BaseOODModule):
     """Uncertainty-based OOD detection."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: 'Config'):
         super().__init__(config)
         self.threshold = config.ood_params.get('uncertainty_threshold', 0.8)
         self.method = config.ood_params.get('uncertainty_method', 'entropy')

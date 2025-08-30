@@ -24,14 +24,12 @@ logger = logging.getLogger(__name__)
 
 # Imports (organized, without try/except)
 from src.utils import (
-    icicle_logger, set_seed, GPUManager, MetricsCalculator,
+    icicle_logger, set_seed, GPUManager,
     setup_experiment_directories, get_checkpoint_directories, validate_camera_data,
-    load_config, update_config_with_args, validate_config, get_mode_type, get_config_summary,
-    ResultsManager, setup_logging,
+    update_config_with_args, validate_config, get_mode_type,
+    ResultsManager,
 )
 from src.config import ConfigManager
-from src.models.factory import create_model
-from src.data.dataset import get_dataloaders
 
 # Training modules
 from src.training.oracle import train as train_oracle
@@ -197,137 +195,7 @@ def run_training_mode(config, args, mode_type):
     return train_oracle(config, args), 'default'
 
 
-def load_checkpoint_data(data_path):
-    """Kept for compatibility. Prefer src.utils.paths.load_checkpoint_data."""
-    import json
-    with open(data_path, 'r') as f:
-        data = json.load(f)
-    return data
-
-
-def create_checkpoint_dataset(checkpoint_samples, class_names):
-    """Deprecated: use training.common helpers when needed."""
-    from src.training.common import _build_simple_dataset
-    class_to_idx = {name: idx for idx, name in enumerate(class_names)}
-    return _build_simple_dataset(checkpoint_samples, class_to_idx)
-
-
-def calculate_balanced_accuracy(predictions, labels, num_classes):
-    """Deprecated: use MetricsCalculator from src.utils.metrics."""
-    import numpy as np
-    from src.utils.metrics import MetricsCalculator
-    predictions = np.array(predictions)
-    labels = np.array(labels)
-    mc = MetricsCalculator([str(i) for i in range(num_classes)])
-    m = mc.calculate_metrics(predictions, labels)
-    return float(m['balanced_accuracy'])
-
-
-def evaluate_epoch(model, data_loader, criterion, device, mode_type="oracle"):
-    """Deprecated shim to training.common.evaluate_epoch."""
-    from src.training.common import evaluate_epoch as _eval
-    return _eval(model, data_loader, criterion, device)
-
-
-def evaluate_oracle_per_checkpoint(model, config, criterion, device):
-    """Deprecated shim to module in src.training.oracle."""
-    from src.training.oracle import evaluate_oracle_per_checkpoint as _eval
-    return _eval(model, config, criterion, device)
-
-
-def train_model_oracle(config, args):
-    """Delegates to src.training.oracle.train"""
-    return train_oracle(config, args)
-    
-    # Create dataset and dataloader
-    train_dataset = create_checkpoint_dataset(all_samples, class_names)
-    train_loader = DataLoader(
-        train_dataset, 
-        batch_size=config.get('training.batch_size', 32),
-        shuffle=True,
-        num_workers=config.get('training.num_workers', 4)
-    )
-    
-    # Create model
-    model = create_model(config)
-    model = model.to(device)
-    
-    # Training setup
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(
-        model.parameters(),
-        lr=config.get('training.learning_rate', 0.0001),
-        weight_decay=config.get('training.weight_decay', 0.0001)
-    )
-    
-    # Use command line epochs if provided
-    num_epochs = args.epochs if hasattr(args, 'epochs') and args.epochs else config.get('training.epochs', 30)
-    
-    # Log training completion
-    icicle_logger.log_training_completion("oracle")
-    
-    # Save model
-    model_path = 'best_model.pth'
-    torch.save(model.state_dict(), model_path)
-    icicle_logger.log_model_info(f"Model saved to {model_path}")    # Training loop
-    model.train()
-    for epoch in range(num_epochs):
-        running_loss = 0.0
-        correct = 0
-        total = 0
-        
-        for batch_idx, batch in enumerate(train_loader):
-            images = batch['image'].to(device)
-            labels = batch['label'].to(device)
-            
-            # Forward pass
-            optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            
-            # Backward pass
-            loss.backward()
-            optimizer.step()
-            
-            # Statistics
-            running_loss += loss.item()
-            _, predicted = outputs.max(1)
-            total += labels.size(0)
-            correct += predicted.eq(labels).sum().item()
-        
-        train_loss = running_loss / len(train_loader)
-        train_acc = 100. * correct / total if total > 0 else 0
-        lr = optimizer.param_groups[0]['lr']
-        
-        # Log epoch results with clean format
-        icicle_logger.log_training_epoch(
-            epoch=epoch, 
-            phase="TRAIN", 
-            loss=train_loss, 
-            acc=train_acc/100, 
-            bal_acc=train_acc/100,  # Using same as acc for simplicity
-            lr=lr,
-            samples=total
-        )
-        
-        # Add separator between epochs
-        if epoch < num_epochs - 1:
-            icicle_logger.log_training_separator()
-    
-    # Log training completion
-    icicle_logger.log_training_completion("oracle")
-    
-    # Save model
-    model_path = 'best_model.pth'
-    torch.save(model.state_dict(), model_path)
-    icicle_logger.log_model_info(f"Model saved to {model_path}")
-    
-    return model
-
-
-def train_model_accumulative(config, args):
-    """Delegates to src.training.accumulative.train"""
-    return train_accumulative(config, args)
+## Removed deprecated compatibility shims and unused wrappers from V1
 
 
 def main():
@@ -474,7 +342,7 @@ def main():
             except Exception as e:
                 logger.warning(f"Failed to override ckp_1 with zero-shot metrics: {e}")
         
-    # Store results
+        # Store results
         for checkpoint, result in checkpoint_results.items():
             results_manager.add_checkpoint_result(
                 checkpoint=checkpoint,
