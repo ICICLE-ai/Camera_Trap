@@ -223,24 +223,3 @@ def get_relative_path(full_path: str, base_path: str = None) -> str:
     except ValueError:
         # Return full path if relative path can't be determined
         return full_path
-
-
-def get_relative_path(full_path: str, base_path: str = None) -> str:
-    """
-    Get relative path from full path.
-    
-    Args:
-        full_path: Full absolute path
-        base_path: Base path to make relative to (default: current working directory)
-        
-    Returns:
-        Relative path
-    """
-    if base_path is None:
-        base_path = os.getcwd()
-    
-    try:
-        return os.path.relpath(full_path, base_path)
-    except ValueError:
-        # Return full path if relative path can't be determined
-        return full_path

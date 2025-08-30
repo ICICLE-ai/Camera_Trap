@@ -11,7 +11,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from ..core.config import Config
+from typing import TYPE_CHECKING, Any
+if TYPE_CHECKING:
+    Config = Any
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +22,7 @@ class CLFactory:
     """Factory for creating Continual Learning modules."""
     
     @staticmethod
-    def create(method: str, config: Config) -> 'BaseCLModule':
+    def create(method: str, config: 'Config') -> 'BaseCLModule':
         """Create CL module based on method name."""
         
         method = method.lower()
@@ -43,7 +45,7 @@ class CLFactory:
 class BaseCLModule(ABC):
     """Base class for Continual Learning modules."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: 'Config'):
         self.config = config
         self.device = config.device
         self.buffer = []  # For storing previous samples
@@ -267,7 +269,7 @@ class CLNaiveFT(BaseCLModule):
 class CLAccumulative(BaseCLModule):
     """Accumulative training on all samples seen so far."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: 'Config'):
         super().__init__(config)
         self.accumulated_samples = []
     
@@ -300,7 +302,7 @@ class CLAccumulative(BaseCLModule):
 class CLEWC(BaseCLModule):
     """Elastic Weight Consolidation for continual learning."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: 'Config'):
         super().__init__(config)
         self.fisher_info = None
         self.optimal_params = None
@@ -349,7 +351,7 @@ class CLEWC(BaseCLModule):
 class CLReplay(BaseCLModule):
     """Experience replay for continual learning."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: 'Config'):
         super().__init__(config)
         self.buffer_size = config.cl_params.get('buffer_size', 1000)
         self.replay_ratio = config.cl_params.get('replay_ratio', 0.2)

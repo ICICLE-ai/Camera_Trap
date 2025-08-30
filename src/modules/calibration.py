@@ -4,11 +4,13 @@ Calibration Module for inference-level model calibration
 
 import logging
 import numpy as np
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, TYPE_CHECKING
 import torch
 import torch.nn as nn
 
-from ..core.config import Config
+# Avoid runtime dependency on removed core.config; use type-only alias
+if TYPE_CHECKING:
+    Config = Any
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +19,7 @@ class CalibrationFactory:
     """Factory for creating calibration modules."""
     
     @staticmethod
-    def create(config: Config) -> Optional['BaseCalibrationModule']:
+    def create(config: 'Config') -> Optional['BaseCalibrationModule']:
         """Create calibration module if calibration is enabled."""
         
         if not config.calibration:
@@ -39,7 +41,7 @@ class CalibrationFactory:
 class BaseCalibrationModule:
     """Base class for calibration modules."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: 'Config'):
         self.config = config
         self.device = config.device
         self.is_fitted = False
@@ -191,7 +193,7 @@ class BaseCalibrationModule:
 class TemperatureScaling(BaseCalibrationModule):
     """Temperature scaling calibration."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: 'Config'):
         super().__init__(config)
         self.temperature = 1.0
     
@@ -232,7 +234,7 @@ class TemperatureScaling(BaseCalibrationModule):
 class PlattScaling(BaseCalibrationModule):
     """Platt scaling (sigmoid) calibration."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: 'Config'):
         super().__init__(config)
         self.A = 1.0
         self.B = 0.0
@@ -290,7 +292,7 @@ class PlattScaling(BaseCalibrationModule):
 class IsotonicCalibration(BaseCalibrationModule):
     """Isotonic regression calibration."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: 'Config'):
         super().__init__(config)
         self.calibrator = None
     

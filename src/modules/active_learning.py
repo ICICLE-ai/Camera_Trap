@@ -9,7 +9,9 @@ from typing import Tuple, Any
 import torch
 import torch.nn as nn
 
-from ..core.config import Config
+from typing import TYPE_CHECKING, Any
+if TYPE_CHECKING:
+    Config = Any
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +20,7 @@ class ALFactory:
     """Factory for creating Active Learning modules."""
     
     @staticmethod
-    def create(method: str, config: Config) -> 'BaseALModule':
+    def create(method: str, config: 'Config') -> 'BaseALModule':
         """Create AL module based on method name."""
         
         method = method.lower()
@@ -45,7 +47,7 @@ class ALFactory:
 class BaseALModule(ABC):
     """Base class for Active Learning modules."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: 'Config'):
         self.config = config
         self.device = config.device
     
@@ -95,7 +97,7 @@ class ALAll(BaseALModule):
 class ALRandom(BaseALModule):
     """Random sample selection."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: 'Config'):
         super().__init__(config)
         self.selection_ratio = config.al_params.get('selection_ratio', 0.5)
     
@@ -122,7 +124,7 @@ class ALRandom(BaseALModule):
 class ALUncertainty(BaseALModule):
     """Uncertainty-based active learning."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: 'Config'):
         super().__init__(config)
         self.selection_ratio = config.al_params.get('selection_ratio', 0.5)
         self.uncertainty_method = config.al_params.get('uncertainty_method', 'entropy')
@@ -173,7 +175,7 @@ class ALUncertainty(BaseALModule):
 class ALActiveFT(BaseALModule):
     """Active learning with feature-based sampling."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: 'Config'):
         super().__init__(config)
         self.selection_ratio = config.al_params.get('selection_ratio', 0.5)
         self.feature_dim = config.al_params.get('feature_dim', 512)
@@ -225,7 +227,7 @@ class ALActiveFT(BaseALModule):
 class ALMLS(BaseALModule):
     """Minimum Logit Score active learning."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: 'Config'):
         super().__init__(config)
         self.selection_ratio = config.al_params.get('selection_ratio', 0.5)
     
@@ -274,7 +276,7 @@ class ALMLS(BaseALModule):
 class ALMSP(BaseALModule):
     """Minimum Softmax Probability active learning."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: 'Config'):
         super().__init__(config)
         self.selection_ratio = config.al_params.get('selection_ratio', 0.5)
     
