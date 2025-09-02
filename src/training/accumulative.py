@@ -398,7 +398,7 @@ def train(config: Dict, args) -> torch.nn.Module:
 					ckpt_path = os.path.join(out_dir, f"acc_round{round_idx:02d}_best_epoch{best_epoch + 1:02d}.pth")
 					torch.save(model.state_dict(), ckpt_path)
 					icicle_logger.log_model_info(f"    💾 Saved best weights → {ckpt_path}")
-					icicle_logger.log_model_info("    " + "────────────────────────────────────────────────────────────────────────────────")
+					icicle_logger.log_model_info(f"    ── End of Round {round_idx} ─────────────────────────────────────────────────\n")
 				except Exception as e:
 					logger.warning(f"Failed to save round {round_idx} best weights: {e}")
 			except Exception:
