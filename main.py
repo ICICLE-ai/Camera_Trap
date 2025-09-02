@@ -6,7 +6,7 @@ A clean, organized, and scalable camera trap evaluation framework.
 Supports both config-based and argument-based execution with enhanced logging.
 
 Usage:
-    python main.py --camera APN_K024 --config configs/training/baseline.yaml
+    python main.py --camera APN_K024 --config configs/oracle.yaml
     python main.py --camera APN_K024 --model bioclip --epochs 30 --lr 0.0001
 """
 
