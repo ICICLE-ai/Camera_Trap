@@ -6,3 +6,4 @@ pretrained_weight/*
 *.txt
 logs/*
 launch.json
+wandb/*

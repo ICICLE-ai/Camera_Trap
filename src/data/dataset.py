@@ -238,7 +238,7 @@ def get_oracle_validation_samples(train_data, test_data, all_classes):
         if sample_id not in val_samples_selected:
             train_samples_final.append(sample)
     
-    logger.info(f"📊 Oracle validation: {len(val_samples)} validation samples, {len(train_samples_final)} training samples")
+    logger.info(f"📊 Oracle validation: {len(val_samples)} validation samples, {len(train_samples_final)} training samples\n")
     return train_samples_final, val_samples
 
 
@@ -288,9 +288,17 @@ def get_dataloaders(config_dict, mode='oracle', current_checkpoint=None, verbose
     from PIL import Image
     import torchvision.transforms as transforms
     import random
-    
-    # Set random seed for reproducible validation splits
-    random.seed(42)
+    import numpy as np
+    import torch
+
+    # Seed everything locally for fully reproducible splits and any RNG usage here
+    seed = int(config_dict.get('seed', 42))
+    random.seed(seed)
+    np.random.seed(seed)
+    try:
+        torch.manual_seed(seed)
+    except Exception:
+        pass
     
     # Load JSON data
     data_config = config_dict['data']
@@ -425,29 +433,50 @@ def get_dataloaders(config_dict, mode='oracle', current_checkpoint=None, verbose
     # Conservative default batch sizes to keep VRAM usage low unless overridden
     train_batch_size = int(training_config.get('train_batch_size', training_config.get('batch_size', 8)))
     eval_batch_size = int(training_config.get('eval_batch_size', 8))
+
+    # Deterministic shuffling via fixed generator
+    g = torch.Generator()
+    try:
+        g.manual_seed(seed)
+    except Exception:
+        pass
+
+    # Seed workers if num_workers > 0 (future-proofing)
+    def _seed_worker(worker_id: int):
+        worker_seed = seed + worker_id
+        random.seed(worker_seed)
+        np.random.seed(worker_seed % (2**32 - 1))
+        try:
+            torch.manual_seed(worker_seed)
+        except Exception:
+            pass
     
     train_loader = DataLoader(
         train_dataset,
         batch_size=train_batch_size,
         shuffle=True,
-    num_workers=0,
-    pin_memory=False
+        num_workers=0,
+        pin_memory=False,
+        generator=g,
+        worker_init_fn=_seed_worker,
     )
     
     val_loader = DataLoader(
         val_dataset,
         batch_size=eval_batch_size,
         shuffle=False,
-    num_workers=0,
-    pin_memory=False
+        num_workers=0,
+        pin_memory=False,
+        worker_init_fn=_seed_worker,
     )
     
     test_loader = DataLoader(
         test_dataset,
         batch_size=eval_batch_size,
         shuffle=False,
-    num_workers=0,
-    pin_memory=False
+        num_workers=0,
+        pin_memory=False,
+        worker_init_fn=_seed_worker,
     )
     
     return train_loader, val_loader, test_loader
