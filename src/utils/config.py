@@ -86,6 +86,15 @@ def update_config_with_args(config: Dict[str, Any], args: Any) -> Dict[str, Any]
         'output_dir': 'output_dir',
         'model_path': 'model_path'
     }
+
+    # Optional: Weights & Biases (wandb)
+    # Only set when provided on CLI
+    if getattr(args, 'wandb', None) is not None:
+        arg_mappings['wandb'] = 'wandb.enabled'
+    if getattr(args, 'wandb_project', None) is not None:
+        arg_mappings['wandb_project'] = 'wandb.project'
+    if getattr(args, 'wandb_run', None) is not None:
+        arg_mappings['wandb_run'] = 'wandb.run_name'
     
     # Update config with provided arguments
     for arg_name, config_key in arg_mappings.items():

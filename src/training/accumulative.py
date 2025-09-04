@@ -49,7 +49,9 @@ def train(config: Dict, args) -> torch.nn.Module:
 		for k, samples in d.items():
 			if k.startswith('ckp_'):
 				for s in samples:
-					classes.add(s['common'])
+					cname = (s.get('common') or '').strip()
+					if cname:
+						classes.add(cname)
 	class_names = sorted(list(classes))
 	config.setdefault('model', {})['num_classes'] = len(class_names)
 	config.setdefault('data', {})['class_names'] = class_names
@@ -161,8 +163,27 @@ def train(config: Dict, args) -> torch.nn.Module:
 		next_test_loader = None
 		ds_next = None
 		if next_samples:
-			class_to_idx = {n: i for i, n in enumerate(class_names)}
-			ds_next = _build_simple_dataset(next_samples, class_to_idx)
+			# Use normalized keys for class map based on global class list in config
+			from .common import normalize_class_name, _build_simple_dataset
+			global_class_names = (config.get('data', {}) or {}).get('class_names') or class_names
+			class_to_idx = {normalize_class_name(n): i for i, n in enumerate(global_class_names)}
+			# Filter any samples whose normalized class is missing to prevent KeyError
+			missing = set()
+			filtered = []
+			for s in next_samples:
+				cn = normalize_class_name(s.get('common'))
+				if cn in class_to_idx:
+					filtered.append(s)
+				else:
+					missing.add(cn)
+			if missing:
+				try:
+					icicle_logger.log_model_info(
+						f"Round {round_idx}: skipping {len(missing)} unseen class(es) in next test set: {sorted(list(missing))[:5]}..."
+					)
+				except Exception:
+					pass
+			ds_next = _build_simple_dataset(filtered, class_to_idx)
 			next_test_loader = DataLoader(
 				ds_next,
 				batch_size=int(config.get('training', {}).get('eval_batch_size', 8)),
@@ -191,7 +212,8 @@ def train(config: Dict, args) -> torch.nn.Module:
 		# train epochs with early stopping policy if validation available
 		model.train()
 		use_es = bool(args.train_val and val_loader and len(val_loader) > 0)
-		target_epochs = 10 if use_es else epochs_per_round
+		# If ES is on, start with min(10, cap); otherwise run full cap
+		target_epochs = int(min(10, int(epochs_per_round))) if use_es else int(epochs_per_round)
 		val_ba_hist = []
 		best_val_ba = float('-inf')
 		best_epoch = -1
@@ -200,6 +222,8 @@ def train(config: Dict, args) -> torch.nn.Module:
 				running_loss = 0.0
 				correct = 0
 				total = 0
+				train_preds = []
+				train_lbls = []
 				for batch_idx, batch in enumerate(train_loader):
 					images = batch['image'].to(device)
 					labels = batch['label'].to(device)
@@ -212,6 +236,12 @@ def train(config: Dict, args) -> torch.nn.Module:
 					_, predicted = outputs.max(1)
 					total += labels.size(0)
 					correct += predicted.eq(labels).sum().item()
+					# collect for balanced accuracy
+					try:
+						train_preds.extend(predicted.detach().cpu().numpy())
+						train_lbls.extend(labels.detach().cpu().numpy())
+					except Exception:
+						pass
 
 					# Periodic cleanup to reduce VRAM growth
 					del images, labels, outputs, predicted
@@ -222,7 +252,36 @@ def train(config: Dict, args) -> torch.nn.Module:
 
 				train_loss = running_loss / max(len(train_loader), 1)
 				train_acc = (correct / total) if total > 0 else 0.0
-				print(f"    🔹 Epoch {epoch:2d} [TRAIN] Loss: {train_loss:.4f} | Acc: {train_acc:.4f} | Bal.Acc: {train_acc:.4f}")
+				# compute balanced accuracy from collected predictions
+				try:
+					if len(train_preds) > 0:
+						import numpy as np
+						n_classes = int(np.max(train_lbls)) + 1
+						class_names = [str(i) for i in range(n_classes)]
+						from src.utils.metrics import MetricsCalculator
+						mc = MetricsCalculator(class_names)
+						m = mc.calculate_metrics(np.array(train_preds), np.array(train_lbls))
+						train_bal_acc = float(m.get('balanced_accuracy', train_acc))
+					else:
+						train_bal_acc = float(train_acc)
+				except Exception:
+					train_bal_acc = float(train_acc)
+				print(f"    🔹 Epoch {epoch:2d} [TRAIN] Loss: {train_loss:.4f} | Acc: {train_acc:.4f} | Bal.Acc: {train_bal_acc:.4f}")
+
+				# Wandb logging for train
+				if getattr(args, 'wandb', False):
+					try:
+						import wandb
+						if wandb.run is not None:
+							wandb.log({
+								'train/loss': float(train_loss),
+								'train/accuracy': float(train_acc),
+								'train/balanced_accuracy': float(train_bal_acc),
+								'epoch': int(epoch),
+								'round': int(round_idx),
+							})
+					except Exception:
+						pass
 
 				if args.train_val and val_loader and len(val_loader) > 0:
 					v_loss, v_acc, v_ba, v_n = evaluate_epoch(model, val_loader, criterion, device)
@@ -231,6 +290,7 @@ def train(config: Dict, args) -> torch.nn.Module:
 					if improved:
 						val_line += "  ✓ BEST ACC (↑) SAVED"
 					print(val_line)
+					# No per-epoch wandb logging for val
 					if improved:
 						best_val_ba = float(v_ba)
 						best_epoch = int(epoch)
@@ -243,9 +303,10 @@ def train(config: Dict, args) -> torch.nn.Module:
 				if args.train_test and next_test_loader is not None and len(next_test_loader) > 0:
 					t_loss, t_acc, t_ba, t_n = evaluate_epoch(model, next_test_loader, criterion, device)
 					print(f"    🔻 Epoch {epoch:2d} [TEST+] Loss: {t_loss:.4f} | Acc: {t_acc:.4f} | Bal.Acc: {t_ba:.4f}")
+					# No per-epoch wandb logging for test
 
 				# Visual separator between epochs
-				print("" + "────────────────────────────────────────────────────────────────────────────────")
+				print("    " + "────────────────────────────────────────────────────────────────────────────────")
 
 				# Early stopping decision at epoch 9 (after 10 epochs)
 				if use_es and epoch == 9:
@@ -255,15 +316,16 @@ def train(config: Dict, args) -> torch.nn.Module:
 						if best_idx_10 == 10:
 							# Best is the most recent epoch → keep going up to max 20
 							icicle_logger.log_model_info(
-								f"Round {round_idx}: monitoring shows improvement at epoch 10; continuing up to {min(epochs_per_round, 20)} epochs"
+								f"    Monitoring shows improvement at epoch 10; continuing up to {min(epochs_per_round, 20)} epochs (capped)."
 							)
-							target_epochs = max(target_epochs, min(epochs_per_round, 20))
+							# Expand to at most 20 but never exceed the user/config cap
+							target_epochs = max(int(target_epochs), int(min(epochs_per_round, 20)))
 						else:
 							# Stop after 10 and keep the best within first 10
 							best_epoch = best_idx_10 - 1
 							best_val_ba = best_val_10
 							icicle_logger.log_model_info(
-								f"Round {round_idx}: early stopping triggered after 10 epochs; best epoch {best_idx_10} val_balanced_acc={best_val_10:.4f}"
+								f"    Early stopping triggered after 10 epochs; best epoch {best_idx_10} val_balanced_acc={best_val_10:.4f}"
 							)
 							break
 
@@ -281,7 +343,7 @@ def train(config: Dict, args) -> torch.nn.Module:
 			try:
 				model.load_state_dict(best_state)
 				icicle_logger.log_model_info(
-					f"Round {round_idx}: selected best epoch {best_epoch + 1} (val_balanced_acc={best_val_ba:.4f}); using these weights for end-of-round testing/saving."
+					f"    Selected best epoch {best_epoch + 1} (val_balanced_acc={best_val_ba:.4f}); using these weights for end-of-round testing/saving."
 				)
 				# End-of-round summary with best weights (multiline, indented)
 				val_metrics = None
@@ -293,25 +355,41 @@ def train(config: Dict, args) -> torch.nn.Module:
 					t_loss, t_acc, t_ba, t_n = evaluate_epoch(model, next_test_loader, criterion, device)
 					test_metrics = (t_loss, t_acc, t_ba)
 				if val_metrics or test_metrics:
-					lines = [f"Round {round_idx}: Best epoch {best_epoch + 1} —"]
+					lines = [f"    Best epoch {best_epoch + 1} —"]
 					key_w = 7  # width to align keys (e.g., 'Bal.Acc')
 					if val_metrics:
 						vl, va, vba = val_metrics
 						lines += [
-							"  VAL:",
-							f"    {'Loss':<{key_w}}: {vl:.4f}",
-							f"    {'Acc':<{key_w}}: {va:.4f}",
-							f"    {'Bal.Acc':<{key_w}}: {vba:.4f}",
+							"      VAL:",
+							f"        {'Loss':<{key_w}}: {vl:.4f}",
+							f"        {'Acc':<{key_w}}: {va:.4f}",
+							f"        {'Bal.Acc':<{key_w}}: {vba:.4f}",
 						]
 					if test_metrics:
 						tl, ta, tba = test_metrics
 						lines += [
-							"  TEST+:",
-							f"    {'Loss':<{key_w}}: {tl:.4f}",
-							f"    {'Acc':<{key_w}}: {ta:.4f}",
-							f"    {'Bal.Acc':<{key_w}}: {tba:.4f}",
+							"      TEST+:",
+							f"        {'Loss':<{key_w}}: {tl:.4f}",
+							f"        {'Acc':<{key_w}}: {ta:.4f}",
+							f"        {'Bal.Acc':<{key_w}}: {tba:.4f}",
 						]
 					icicle_logger.log_model_info("\n".join(lines))
+					# Final-only wandb logging for val/test
+					if getattr(args, 'wandb', False):
+						try:
+							import wandb
+							if wandb.run is not None:
+								log_final = {}
+								if val_metrics:
+									_, va, vba = val_metrics
+									log_final.update({'val/accuracy': float(va), 'val/balanced_accuracy': float(vba)})
+								if test_metrics:
+									_, ta, tba = test_metrics
+									log_final.update({'test/accuracy': float(ta), 'test/balanced_accuracy': float(tba)})
+								if log_final:
+									wandb.log(log_final)
+						except Exception:
+							pass
 				# Save round-best weights
 				try:
 					import os
@@ -319,8 +397,8 @@ def train(config: Dict, args) -> torch.nn.Module:
 					os.makedirs(out_dir, exist_ok=True)
 					ckpt_path = os.path.join(out_dir, f"acc_round{round_idx:02d}_best_epoch{best_epoch + 1:02d}.pth")
 					torch.save(model.state_dict(), ckpt_path)
-					icicle_logger.log_model_info(f"💾 Saved round {round_idx} best weights → {ckpt_path}")
-					icicle_logger.log_model_info("────────────────────────────────────────────────────────────────────────────────")
+					icicle_logger.log_model_info(f"    💾 Saved best weights → {ckpt_path}")
+					icicle_logger.log_model_info(f"    ── End of Round {round_idx} ─────────────────────────────────────────────────\n")
 				except Exception as e:
 					logger.warning(f"Failed to save round {round_idx} best weights: {e}")
 			except Exception:

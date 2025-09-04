@@ -11,6 +11,8 @@ import logging
 import torch
 import torch.nn as nn
 import numpy as np
+import unicodedata
+import re
 
 from src.utils import icicle_logger
 from src.utils.metrics import MetricsCalculator
@@ -25,11 +27,31 @@ from src.data.dataset import get_dataloaders
 logger = logging.getLogger(__name__)
 
 
-def evaluate_epoch(model: torch.nn.Module,
-				   data_loader,
-				   criterion: nn.Module,
-				   device: torch.device,
-				   ) -> Tuple[float, float, float, int]:
+def normalize_class_name(name: Optional[str]) -> str:
+	"""Normalize class names to avoid mapping mismatches.
+
+	- Handles None safely
+	- Strips leading/trailing whitespace
+	- Collapses internal whitespace to a single space
+	- Lowercases for consistent matching
+	"""
+	s = (name or "")
+	# Unicode normalize to NFKC
+	s = unicodedata.normalize('NFKC', s)
+	# Remove format/zero-width characters
+	s = "".join(ch for ch in s if unicodedata.category(ch) != 'Cf')
+	# Collapse all whitespace sequences to a single space
+	s = re.sub(r"\s+", " ", s, flags=re.UNICODE)
+	# Trim and lowercase
+	return s.strip().lower()
+
+
+def evaluate_epoch(
+	model: torch.nn.Module,
+	data_loader,
+	criterion: nn.Module,
+	device: torch.device,
+) -> Tuple[float, float, float, int]:
 	"""Evaluate model for one epoch over a dataloader.
 
 	Returns (avg_loss, accuracy, balanced_accuracy, total_samples).
@@ -70,7 +92,6 @@ def evaluate_epoch(model: torch.nn.Module,
 	if len(all_predictions) > 0:
 		all_predictions_np = np.array(all_predictions)
 		all_labels_np = np.array(all_labels)
-		# compute balanced accuracy via MetricsCalculator to stay consistent
 		n_classes = int(np.max(all_labels_np)) + 1
 		class_names = [str(i) for i in range(n_classes)]
 		mc = MetricsCalculator(class_names)
@@ -126,21 +147,23 @@ def _build_simple_dataset(samples: List[Dict], class_to_idx: Dict[str, int]):
 			except Exception as e:
 				logger.warning(f"Could not load image {sample.get('image_path','?')}: {e}")
 				image = torch.randn(3, 224, 224)
-			label = self.class_to_idx[sample['common']]
+			cname_norm = normalize_class_name(sample.get('common'))
+			label = self.class_to_idx[cname_norm]
 			return {
 				'image': image,
 				'label': label,
 				'image_path': sample.get('image_path', ''),
-				'common_name': sample.get('common', '')
+				'common_name': sample.get('common', ''),
 			}
 
 	return SimpleDataset(samples, class_to_idx)
 
 
-def evaluate_checkpoints(config: Dict,
-						 args,
-						 trained_model: Optional[torch.nn.Module] = None,
-						 ) -> Tuple[float, Dict[str, Dict]]:
+def evaluate_checkpoints(
+	config: Dict,
+	args,
+	trained_model: Optional[torch.nn.Module] = None,
+) -> Tuple[float, Dict[str, Dict]]:
 	"""Evaluate a model per checkpoint on the test.json file.
 
 	Returns (avg_balanced_accuracy, checkpoint_results_dict).
@@ -167,16 +190,16 @@ def evaluate_checkpoints(config: Dict,
 	# Build class mapping
 	class_names = config.get('data', {}).get('class_names') or []
 	if not class_names:
-		# derive from data
 		classes = set()
 		for ckp, samples in test_data.items():
 			if ckp.startswith('ckp_'):
 				for s in samples:
-					classes.add(s['common'])
+					cname = normalize_class_name(s.get('common'))
+					if cname:
+						classes.add(cname)
 		class_names = sorted(list(classes))
 	class_to_idx = {c: i for i, c in enumerate(class_names)}
 
-	# Use a conservative default eval batch size to avoid VRAM spikes
 	eval_bs = int(config.get('training', {}).get('eval_batch_size', 8))
 
 	results: Dict[str, Dict] = {}
@@ -194,9 +217,7 @@ def evaluate_checkpoints(config: Dict,
 		dl = DataLoader(ds, batch_size=eval_bs, shuffle=False, num_workers=0, pin_memory=False)
 
 		loss, acc, bal_acc, total = evaluate_epoch(model, dl, criterion, device)
-		# Print per-checkpoint quick metric summary with clear indenting
 		try:
-			# Two-level indentation for readability under the progress line
 			label = "balanced acc:"
 			icicle_logger.log_model_info(f"      {label:<15} {bal_acc:>10.4f}")
 		except Exception:
@@ -211,14 +232,12 @@ def evaluate_checkpoints(config: Dict,
 		all_bal_acc.append(bal_acc)
 		all_acc.append(acc)
 
-		# Proactive GPU memory cleanup between checkpoints
 		try:
 			import gc
 			del dl, ds
 			gc.collect()
 			if torch.cuda.is_available():
 				torch.cuda.empty_cache()
-				# Collect IPC memory fragments (helps on some drivers)
 				if hasattr(torch.cuda, 'ipc_collect'):
 					torch.cuda.ipc_collect()
 		except Exception:
@@ -246,7 +265,6 @@ def evaluate_single_checkpoint(
 	model = model.to(device)
 	criterion = nn.CrossEntropyLoss()
 
-	# Load test data and build class map
 	test_path = config.get('data', {}).get('test_path')
 	test_data = load_checkpoint_data(test_path) if test_path else {}
 	samples = test_data.get(checkpoint, [])
@@ -260,11 +278,12 @@ def evaluate_single_checkpoint(
 		for ckp, ss in test_data.items():
 			if ckp.startswith('ckp_'):
 				for s in ss:
-					classes.add(s['common'])
+					cname = normalize_class_name(s.get('common'))
+					if cname:
+						classes.add(cname)
 		class_names = sorted(list(classes))
 	class_to_idx = {c: i for i, c in enumerate(class_names)}
 
-	# Dataset and loader
 	ds = _build_simple_dataset(samples, class_to_idx)
 	dl = DataLoader(
 		ds,
@@ -281,7 +300,6 @@ def evaluate_single_checkpoint(
 		'loss': float(loss),
 	}
 
-	# cleanup
 	try:
 		import gc
 		del dl, ds

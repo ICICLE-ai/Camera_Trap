@@ -6,7 +6,7 @@ A clean, organized, and scalable camera trap evaluation framework.
 Supports both config-based and argument-based execution with enhanced logging.
 
 Usage:
-    python main.py --camera APN_K024 --config configs/training/baseline.yaml
+    python main.py --camera APN_K024 --config configs/oracle.yaml
     python main.py --camera APN_K024 --model bioclip --epochs 30 --lr 0.0001
 """
 
@@ -62,6 +62,7 @@ def parse_args():
     
     # Training arguments
     parser.add_argument('--epochs', type=int, help='Number of training epochs')
+    parser.add_argument('--epoch', type=int, help='Alias of --epochs; acts as a hard max cap')
     parser.add_argument('--batch_size', type=int, help='Training batch size')
     parser.add_argument('--lr', type=float, help='Learning rate')
     parser.add_argument('--train_val', action='store_true', 
@@ -84,6 +85,14 @@ def parse_args():
                        help='Enable GPU memory cleanup')
     parser.add_argument('--no_save', action='store_true', 
                        help='Skip saving results')
+    
+    # Weights & Biases (wandb) arguments
+    parser.add_argument('--wandb', action='store_true',
+                       help='Enable Weights & Biases logging')
+    parser.add_argument('--wandb_project', type=str, default=None,
+                       help="Wandb project name (default: 'camera_trap')")
+    parser.add_argument('--wandb_run', type=str, default=None,
+                       help='Wandb run name (default: experiment.name + timestamp)')
     
     # Evaluation arguments
     parser.add_argument('--eval_only', action='store_true', 
@@ -203,6 +212,10 @@ def main():
     try:
         # Parse arguments
         args = parse_args()
+        # Normalize epoch alias: prefer the smaller if both provided
+        if getattr(args, 'epoch', None) is not None:
+            if getattr(args, 'epochs', None) is None or int(args.epoch) < int(args.epochs):
+                args.epochs = int(args.epoch)
         
         # Setup experiment
         log_dir, timestamp, mode_type, gpu_manager = setup_experiment(args)
@@ -214,6 +227,26 @@ def main():
         config_dict['config'] = args.config
         # Inject output directory so training modules can save artifacts
         config_dict['output_dir'] = log_dir
+
+        # Initialize Weights & Biases if requested
+        if getattr(args, 'wandb', False):
+            try:
+                import wandb
+                # Derive defaults
+                project = args.wandb_project or 'camera_trap'
+                exp_name = (config_dict.get('experiment', {}) or {}).get('name', 'experiment')
+                run_name = args.wandb_run or f"{args.camera}-{exp_name}-{timestamp}"
+                # Add to config for visibility
+                config_dict.setdefault('wandb', {})
+                config_dict['wandb']['enabled'] = True
+                config_dict['wandb']['project'] = project
+                config_dict['wandb']['run_name'] = run_name
+                # Initialize
+                wandb.init(project=project, name=run_name, config=config_dict)
+            except ImportError:
+                logger.warning("wandb is not installed; run `pip install wandb` to enable logging.")
+            except Exception as e:
+                logger.warning(f"Failed to initialize wandb: {e}")
         
         # Get checkpoint information for initial setup
         checkpoints = get_checkpoint_directories(args.camera)
@@ -349,6 +382,19 @@ def main():
                 metrics=result['metrics'],
                 sample_count=result['sample_count']
             )
+            # Also log per-checkpoint metrics to wandb if enabled
+            if getattr(args, 'wandb', False):
+                try:
+                    import wandb
+                    if wandb.run is not None:
+                        m = result['metrics']
+                        wandb.log({
+                            f'ckpt/{checkpoint}/accuracy': float(m.get('accuracy', 0.0)),
+                            f'ckpt/{checkpoint}/balanced_accuracy': float(m.get('balanced_accuracy', 0.0)),
+                            f'ckpt/{checkpoint}/loss': float(m.get('loss', 0.0)),
+                        })
+                except Exception:
+                    pass
         
         # Calculate and save summary
         results_manager.calculate_summary()
@@ -373,6 +419,18 @@ def main():
             summary_data['worst_accuracy'] = worst_ckp[1]['metrics']['balanced_accuracy']
         
         icicle_logger.log_final_summary(summary_data)
+
+        # Log final summary metrics to wandb (useful for zero-shot or overall results)
+        if getattr(args, 'wandb', False):
+            try:
+                import wandb
+                if wandb.run is not None:
+                    wandb.log({
+                        'summary/average_accuracy': float(summary_data.get('average_accuracy', 0.0)),
+                        'summary/average_balanced_accuracy': float(summary_data.get('average_balanced_accuracy', 0.0)),
+                    })
+            except Exception:
+                pass
         
     except Exception as e:
         logger.error(f"Framework execution failed: {str(e)}")
@@ -384,6 +442,13 @@ def main():
         # GPU cleanup
         if 'gpu_manager' in locals():
             gpu_manager.cleanup()
+        # Finish wandb if active
+        try:
+            import wandb  # type: ignore
+            if getattr(wandb, 'run', None) is not None:
+                wandb.finish()
+        except Exception:
+            pass
 
 
 if __name__ == '__main__':

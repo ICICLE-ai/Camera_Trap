@@ -25,6 +25,11 @@ class ConfigManager:
         
         with open(self.config_path, 'r') as f:
             config = yaml.safe_load(f)
+        # yaml.safe_load returns None for empty files; normalize and guard
+        if config is None:
+            raise ValueError(f"Configuration file is empty: {self.config_path}")
+        if not isinstance(config, dict):
+            raise ValueError(f"Configuration root must be a mapping (dict). Got: {type(config).__name__} from {self.config_path}")
         
         # Handle inheritance
         if 'inherit_from' in config:

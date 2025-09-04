@@ -19,6 +19,9 @@ tqdm>=4.62.0
 matplotlib>=3.4.0
 seaborn>=0.11.0
 
+# Experiment tracking (optional)
+wandb>=0.16.0
+
 # Optional dependencies for specific features
 # Uncomment if using specific models or features
 # open_clip_torch>=2.20.0  # For CLIP models

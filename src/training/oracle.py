@@ -101,7 +101,10 @@ def train(config: Dict, args) -> torch.nn.Module:
 		for k, samples in d.items():
 			if k.startswith('ckp_'):
 				for s in samples:
-					classes.add(s['common'])
+					# Normalize class names
+					cname = (s.get('common') or '').strip()
+					if cname:
+						classes.add(cname)
 	class_names = sorted(list(classes))
 	num_classes = len(class_names)
 	config.setdefault('model', {})['num_classes'] = num_classes
@@ -141,8 +144,8 @@ def train(config: Dict, args) -> torch.nn.Module:
 	use_cuda = torch.cuda.is_available()
 	# Early stopping policy when validation is enabled
 	use_es = bool(args.train_val and val_loader and len(val_loader) > 0)
-	# Oracle ES: warmup=10, monitor=5, max=30 → at least 15 epochs, up to 30
-	target_epochs = base_epochs if not use_es else 15
+	# Oracle ES: warmup=10, monitor=5; cap by base_epochs if provided
+	target_epochs = base_epochs if not use_es else min(15, int(base_epochs))
 
 	val_ba_hist = []  # track validation balanced accuracy per epoch
 	best_val_ba = float('-inf')
@@ -154,6 +157,8 @@ def train(config: Dict, args) -> torch.nn.Module:
 		running_loss = 0.0
 		correct = 0
 		total = 0
+		train_preds = []
+		train_lbls = []
 		for batch_idx, batch in enumerate(train_loader):
 			images = batch['image'].to(device)
 			labels = batch['label'].to(device)
@@ -168,6 +173,12 @@ def train(config: Dict, args) -> torch.nn.Module:
 			_, predicted = outputs.max(1)
 			total += labels.size(0)
 			correct += predicted.eq(labels).sum().item()
+			# collect for balanced accuracy
+			try:
+				train_preds.extend(predicted.detach().cpu().numpy())
+				train_lbls.extend(labels.detach().cpu().numpy())
+			except Exception:
+				pass
 
 			# Free tensors and periodically clear cache
 			del images, labels, outputs, predicted
@@ -178,7 +189,35 @@ def train(config: Dict, args) -> torch.nn.Module:
 
 		train_loss = running_loss / max(len(train_loader), 1)
 		train_acc = (correct / total) if total > 0 else 0.0
-		print(f"🔹 Epoch {epoch:2d} [TRAIN] Loss: {train_loss:.4f} | Acc: {train_acc:.4f} | Bal.Acc: {train_acc:.4f}")
+		# compute balanced accuracy from collected predictions
+		try:
+			if len(train_preds) > 0:
+				import numpy as np
+				n_classes = int(np.max(train_lbls)) + 1
+				class_names = [str(i) for i in range(n_classes)]
+				from src.utils.metrics import MetricsCalculator
+				mc = MetricsCalculator(class_names)
+				m = mc.calculate_metrics(np.array(train_preds), np.array(train_lbls))
+				train_bal_acc = float(m.get('balanced_accuracy', train_acc))
+			else:
+				train_bal_acc = float(train_acc)
+		except Exception:
+			train_bal_acc = float(train_acc)
+		print(f"🔹 Epoch {epoch:2d} [TRAIN] Loss: {train_loss:.4f} | Acc: {train_acc:.4f} | Bal.Acc: {train_bal_acc:.4f}")
+
+	# Wandb logging for train
+		if getattr(args, 'wandb', False):
+			try:
+				import wandb
+				if wandb.run is not None:
+					wandb.log({
+						'train/loss': float(train_loss),
+						'train/accuracy': float(train_acc),
+						'train/balanced_accuracy': float(train_bal_acc),
+						'epoch': int(epoch),
+					})
+			except Exception:
+				pass
 
 		if args.train_val and val_loader and len(val_loader) > 0:
 			v_loss, v_acc, v_ba, v_n = evaluate_epoch(model, val_loader, criterion, device)
@@ -198,6 +237,7 @@ def train(config: Dict, args) -> torch.nn.Module:
 		if args.train_test:
 			t_loss, t_acc, t_ba, t_n = evaluate_oracle_per_checkpoint(model, config, criterion, device)
 			print(f"🔻 Epoch {epoch:2d} [TEST*] Loss: {t_loss:.4f} | Acc: {t_acc:.4f} | Bal.Acc: {t_ba:.4f}")
+			# No per-epoch wandb logging for test (final only)
 
 		# Visual separator between epochs
 		print("" + "────────────────────────────────────────────────────────────────────────────────")
@@ -210,9 +250,9 @@ def train(config: Dict, args) -> torch.nn.Module:
 				# Continue if monitor window improved beyond warmup; up to max 30
 				if monitor_best > warm_best:
 					icicle_logger.log_model_info(
-						f"Early stopping: improvement detected in monitor window (monitor={monitor_best:.4f} > warmup={warm_best:.4f}). Continuing up to {min(base_epochs, 30)} epochs."
+						f"Early stopping: improvement detected in monitor window (monitor={monitor_best:.4f} > warmup={warm_best:.4f}). Continuing up to {min(base_epochs, 30)} epochs (capped)."
 					)
-					target_epochs = max(target_epochs, min(base_epochs, 30))
+					target_epochs = max(int(target_epochs), int(min(base_epochs, 30)))
 				else:
 					# Stop at 15, pick best within 15
 					best_idx_15 = int(np.argmax(val_ba_hist[:15])) + 1
@@ -238,16 +278,16 @@ def train(config: Dict, args) -> torch.nn.Module:
 			icicle_logger.log_model_info(
 				f"Selected best epoch {best_epoch + 1} (val_balanced_acc={best_val_ba:.4f}); using these weights for final testing/saving."
 			)
-			# Save best overall weights
+			# Save best overall weights (standard name)
 			try:
 				import os
 				out_dir = config.get('output_dir') or '.'
 				os.makedirs(out_dir, exist_ok=True)
-				ckpt_path = os.path.join(out_dir, f"oracle_best_epoch{best_epoch + 1:02d}.pth")
+				ckpt_path = os.path.join(out_dir, "oracle.pth")
 				torch.save(model.state_dict(), ckpt_path)
-				icicle_logger.log_model_info(f"💾 Saved Oracle best weights → {ckpt_path}")
+				icicle_logger.log_model_info(f"💾 Saved Oracle weights → {ckpt_path}")
 			except Exception as e:
-				logger.warning(f"Failed to save Oracle best weights: {e}")
+				logger.warning(f"Failed to save Oracle weights: {e}")
 			# End-of-run summary with best weights (multiline, aligned)
 			val_metrics = None
 			test_metrics = None
@@ -277,13 +317,35 @@ def train(config: Dict, args) -> torch.nn.Module:
 						f"    {'Bal.Acc':<{key_w}}: {tba:.4f}",
 					]
 				icicle_logger.log_model_info("\n".join(lines))
+				# Final-only wandb logging (accuracy and balanced accuracy)
+				if getattr(args, 'wandb', False):
+					try:
+						import wandb
+						if wandb.run is not None:
+							log_final = {}
+							if val_metrics:
+								_, va, vba = val_metrics
+								log_final.update({'val/accuracy': float(va), 'val/balanced_accuracy': float(vba)})
+							if test_metrics:
+								_, ta, tba = test_metrics
+								log_final.update({'test/accuracy': float(ta), 'test/balanced_accuracy': float(tba)})
+							if log_final:
+								wandb.log(log_final)
+					except Exception:
+						pass
 		except Exception:
 			pass
 
-	model_path = 'oracle_model.pth'
+	# Save final model if best wasn't saved (e.g., no val)
 	try:
-		torch.save(model.state_dict(), model_path)
-		logger.info(f"Model saved to {model_path}")
+		import os
+		out_dir = config.get('output_dir') or '.'
+		os.makedirs(out_dir, exist_ok=True)
+		fallback_path = os.path.join(out_dir, 'oracle.pth')
+		# If file doesn't exist yet, save current model state
+		if not os.path.exists(fallback_path):
+			torch.save(model.state_dict(), fallback_path)
+			logger.info(f"Model saved to {fallback_path}")
 	except Exception as e:
 		logger.warning(f"Failed to save model: {e}")
 
