@@ -395,7 +395,7 @@ def train(config: Dict, args) -> torch.nn.Module:
 					import os
 					out_dir = config.get('output_dir') or '.'
 					os.makedirs(out_dir, exist_ok=True)
-					ckpt_path = os.path.join(out_dir, f"acc_round{round_idx:02d}_best_epoch{best_epoch + 1:02d}.pth")
+					ckpt_path = os.path.join(out_dir, f"acc_round_{round_idx:02d}.pth")
 					torch.save(model.state_dict(), ckpt_path)
 					icicle_logger.log_model_info(f"    💾 Saved best weights → {ckpt_path}")
 					icicle_logger.log_model_info(f"    ── End of Round {round_idx} ─────────────────────────────────────────────────\n")
