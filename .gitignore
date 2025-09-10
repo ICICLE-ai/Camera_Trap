@@ -7,3 +7,6 @@ pretrained_weight/*
 logs/*
 launch.json
 wandb/*
+scripts/myjob.out.2223934
+scripts/myjob.out.2223935
+scripts/myjob.out.2223936

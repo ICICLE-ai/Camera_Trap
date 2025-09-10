@@ -1,0 +1,68 @@
+# Camera Trap Data Processing Settings
+# This file contains centralized configuration for datetime parsing and taxonomy mappings
+
+# Datetime Configuration
+datetime:
+  # Target format for normalized datetime output
+  target_format: "%Y:%m:%d %H:%M:%S"
+  
+  # Supported input datetime formats (in order of priority)
+  # The system will try these formats in order until one succeeds
+  input_formats:
+    - "%Y:%m:%d %H:%M:%S"        # Original format: "2016:01:08 10:35:00"
+    - "%Y-%m-%d %H:%M:%S"        # New format: "2016-01-08 10:35:00"
+    - "%Y/%m/%d %H:%M:%S"        # Alternative format: "2016/01/08 10:35:00"
+    - "%Y-%m-%d %H:%M:%S%z"      # With timezone: "2020-01-08 14:44:06+00:00"
+    - "%Y-%m-%d %H:%M:%S.%f%z"   # With microseconds and timezone: "2017-08-15 11:48:11.123456+00:00"
+    - "%Y-%m-%d"                 # Date only: "2016-01-08"
+    - "%Y:%m:%d"                 # Date only with colons: "2016:01:08"
+    - "%Y/%m/%d"                 # Date only with slashes: "2016/01/08"
+    - "%Y-%m-%d %H:%M:%S.%f"     # With microseconds: "2001-02-28 00:00:00.000"
+    - "%Y-%m-%dT%H:%M:%S"        # ISO format without timezone: "2016-01-08T10:35:00"
+    - "%Y-%m-%dT%H:%M:%S.%f"     # ISO format with microseconds: "2016-01-08T10:35:00.123456"
+    - "%Y-%m-%dT%H:%M:%S%z"      # ISO format with timezone: "2016-01-08T10:35:00+00:00"
+    - "%Y-%m-%dT%H:%M:%SZ"       # ISO format with Z timezone: "2016-01-08T10:35:00Z"
+    - "%Y-%m-%dT%H:%M:%S.%f%z"   # ISO format with microseconds and timezone: "2016-01-08T10:35:00.123456+00:00"
+    - "%m/%d/%Y %H:%M:%S"        # US format: "01/08/2016 10:35:00"
+    - "%d/%m/%Y %H:%M:%S"        # European format: "08/01/2016 10:35:00"
+    - "%m/%d/%Y"                 # US date only: "01/08/2016"
+    - "%d/%m/%Y"                 # European date only: "08/01/2016"
+    - "%m/%d/%Y %H:%M"           # US format: "4/14/2015 9:19"
+    - "%d/%m/%Y %H:%M"           # European format: "19/09/2015 10:12"
+    - "%m/%d/%Y %H:%M:%S"        # Format: "5/16/2016 2:38:45"
+
+# Taxonomy Dataset Mappings
+# Maps pipeline dataset names to taxonomy CSV dataset names
+taxonomy:
+  dataset_mappings:
+    # Snapshot Safari 2024 Expansion datasets
+    APN: "Snapshot Safari 2024 Expansion"
+    CDB: "Snapshot Safari 2024 Expansion"
+    ENO: "Snapshot Safari 2024 Expansion"
+    KAR: "Snapshot Safari 2024 Expansion"
+    KGA: "Snapshot Safari 2024 Expansion"
+    KRU: "Snapshot Safari 2024 Expansion"
+    LEC: "Snapshot Safari 2024 Expansion"
+    MAD: "Snapshot Safari 2024 Expansion"
+    MTZ: "Snapshot Safari 2024 Expansion"
+    PLN: "Snapshot Safari 2024 Expansion"
+    RUA: "Snapshot Safari 2024 Expansion"
+    SER: "Snapshot Safari 2024 Expansion"
+    
+    # Individual dataset mappings
+    serengeti: "Snapshot Serengeti"
+    na: "NACTI"
+    orinoquia: "Orinoquia Camera Traps"
+    idaho: "Idaho Camera Traps"
+    wcs: "WCS Camera Traps"
+    island_conservation: "Island Conservation Camera Traps"
+    nz: "Trail Camera Images of New Zealand Animals"
+    missouri: "Missouri Camera Traps"
+    wellington: "Wellington Camera Traps"
+    caltech: "Caltech Camera Traps"
+    seattle: "Seattle(ish) Camera Traps"
+    swg: "SWG Camera Traps"
+    channel_island: "Channel Islands Camera Traps"
+    
+    # Add more mappings as needed
+    # Format: pipeline_name: "Taxonomy CSV Dataset Name"

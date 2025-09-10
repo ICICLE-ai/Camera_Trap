@@ -15,7 +15,7 @@ A clean, organized, and scalable version of the ICICLE benchmark for camera trap
 
 ### Using Config File (Recommended)
 ```bash
-python main.py --camera APN_K024 --config configs/oracle.yaml
+python main.py --camera APN_K024 --config configs/experiments/baseline.yaml
 ```
 
 ### Using Command Line Arguments
@@ -39,9 +39,10 @@ A clean, organized camera-trap evaluation/training framework with zero-shot, ora
 ```
 ├── main.py                    # Single entrypoint (parses args, sets up, runs training/eval)
 ├── configs/
-│   ├── zs.yaml               # Zero-shot (no training)
-│   ├── oracle.yaml           # Oracle training on all data
-│   └── accumulative.yaml     # Accumulative training across checkpoints
+│   └── training/
+│       ├── zs.yaml           # Zero-shot (no training)
+│       ├── oracle.yaml       # Oracle training on all data
+│       └── accumulative.yaml # Accumulative training across checkpoints
 ├── src/
 │   ├── config.py             # ConfigManager: loads YAML, exposes dict
 │   ├── data/
@@ -82,21 +83,21 @@ Use `--train_val --train_test` to enable per-epoch validation and per-epoch test
 Zero-shot (ZS)
 ```bash
 python main.py --camera ENO_C05 \
-	--config configs/zs.yaml \
+	--config configs/training/zs.yaml \
 	--train_val --train_test
 ```
 
 Oracle training
 ```bash
 python main.py --camera ENO_C05 \
-	--config configs/oracle.yaml \
+	--config configs/training/oracle.yaml \
 	--train_val --train_test
 ```
 
 Accumulative training
 ```bash
 python main.py --camera ENO_C05 \
-	--config configs/accumulative.yaml \
+	--config configs/training/accumulative.yaml \
 	--train_val --train_test
 ```
 
