@@ -1,31 +1,18 @@
-# ICICLE-Benchmark V2
-
-A clean, organized, and scalable version of the ICICLE benchmark for camera trap image analysis with adaptive learning capabilities.
-
-## Features
-
-- **Clean Architecture**: Modular design with clear separation of concerns
-- **Flexible Configuration**: Support for both YAML config files and command-line arguments
-- **Core Modules**: OOD detection, Active Learning, Continual Learning, PEFT (LoRA), and Calibration
-- **Efficient GPU Management**: Optional GPU VRAM cleaning with simple on/off toggle
-- **Comprehensive Logging**: Clean and organized logging system
-- **Scalable Design**: Easy to extend with new methods and datasets
-
-## Quick Start
-
-### Using Config File (Recommended)
-```bash
-python main.py --camera APN_K024 --config configs/experiments/baseline.yaml
-```
-
-### Using Command Line Arguments
-```bash
-python main.py --camera APN_K024 --model bioclip --epochs 30 --lr 0.0001
-```
-
 # Camera Trap Framework (ICICLE-Benchmark V2)
 
-A clean, organized camera-trap evaluation/training framework with zero-shot, oracle, and accumulative modes.
+ICICLE benchmark for camera trap image analysis with adaptive learning capabilities.
+
+Tags: Foundation-AI
+
+## License
+
+MIT License. See `LICENSE` for details.
+
+
+## Acknowledgements
+
+*National Science Foundation (NSF) funded AI institute for Intelligent Cyberinfrastructure with Computational Learning in the Environment (ICICLE) (OAC 2112606)*
+
 
 ## Overview
 

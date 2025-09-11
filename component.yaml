@@ -1,0 +1,32 @@
+id: CameraTrap:1.0.0
+name: Camera Trap Benchmark
+owner: Sooyoung Jeon
+primaryThrust: core/FoundationAI
+status: Prototype
+description: Camera trap image analysis benchmark with adaptive learning capabilities.
+componentVersion: 1.0.0
+targetIcicleRelease: 2025-10
+licenseUrl: https://github.com/ICICLE-ai/Camera_Trap/blob/main/LICENSE
+website: https://github.com/ICICLE-ai/Camera_Trap
+sourceCodeUrl: https://github.com/ICICLE-ai/Camera_Trap
+releaseNotesUrl: ""
+doi: ""
+citation: ""
+pypiPackage: ""
+containerImage: ""
+hpcModule: ""
+unixPackage: ""
+rustCrate: ""
+javaJar: ""
+artifactOther: ""
+codeReviewConducted: false
+testsWritten: true
+securityReviewConducted: false
+biasAssessmentConducted: false
+usageDocumentationAvailable: true
+usageDocumentationUrl: https://github.com/ICICLE-ai/Camera_Trap#readme
+developerDocumentationAvailable: false
+developerDocumentationUrl: ""
+trainingTutorialsAvailable: false
+trainingTutorialsUrl: ""
+usageMetricsCollected: false
