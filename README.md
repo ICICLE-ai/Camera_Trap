@@ -4,24 +4,25 @@ ICICLE benchmark for camera trap image analysis with adaptive learning capabilit
 
 Tags: Foundation-AI
 
-## License
+### License
 
 MIT License. See `LICENSE` for details.
 
-
-## Acknowledgements
+### Acknowledgements
 
 *National Science Foundation (NSF) funded AI institute for Intelligent Cyberinfrastructure with Computational Learning in the Environment (ICICLE) (OAC 2112606)*
 
+---
+## Explanation
 
-## Overview
+### Overview
 
 - Clean, modular architecture under `src/`
 - YAML-first configuration with CLI overrides
 - Optional per-epoch validation and next-checkpoint testing
 - Organized logging and results export
 
-## Repository structure (what each part means)
+### Repository structure (what each part means)
 
 ```
 ├── main.py                    # Single entrypoint (parses args, sets up, runs training/eval)
@@ -57,13 +58,17 @@ Notes
 - The training flows primarily use `src/training/*` and `src/models/factory.py`.
 - `src/modules/*` are optional/pluggable components for advanced workflows.
 
-## Data expectation
+### Data expectation
 
 Given `--camera <PROJECT_CAMERA>` (e.g., `ENO_C05`), data is read from:
 - `data/<PROJECT>/<PROJECT_CAMERA>/30/train.json`
 - `data/<PROJECT>/<PROJECT_CAMERA>/30/test.json`
 
-## How to run (with validation and test per-epoch)
+---
+
+## How-To Guides
+
+### How to run (with validation and test per-epoch)
 
 Use `--train_val --train_test` to enable per-epoch validation and per-epoch test.
 
@@ -94,7 +99,7 @@ Common CLI flags
 - `--timestamps` to include timestamps in console logs
 - `--gpu_cleanup` to force periodic VRAM cleanup
 
-## Current training settings (defaults from configs)
+### Current training settings (defaults from configs)
 
 Shared defaults (oracle/accumulative)
 - epochs: 30
@@ -129,12 +134,14 @@ Per-epoch testing
 	- Oracle: tests per-epoch over all test checkpoints (averaged report per epoch).
 	- Accumulative: tests per-epoch on the next checkpoint of the current round.
 
-## Outputs
+### Outputs
 
 - Logs and summaries are written under `logs/` (organized by camera and timestamp).
 - Model checkpoints for best epochs per round (accumulative) or overall (oracle) are saved in the run output directory.
 
-## Notes
+### Notes
 
 - BioCLIP v2 weights are auto-discovered if present under `pretrained_weight/` or `ICICLE-Benchmark/pretrained_weight/`.
 - If not found, a placeholder model is used with the correct number of classes (still useful for wiring tests).
+
+---
